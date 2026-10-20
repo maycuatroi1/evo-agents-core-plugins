@@ -1,0 +1,79 @@
+name: compat
+
+# The plugins against evo-agents' main, every night and by hand: whether main still serves the version of the API of
+# core plugins they ask for (python -m evo_agents.hub.server.core_plugin_api version against python -m
+# evo_core_plugins api), then every test, as ci.yml runs them against the lock. A failure opens an issue labelled
+# compat, or comments on the one still open, with the commit of main and the run; nothing else changes. Main moving to
+# another version of the API is expected (docs: README.md, A change of the API): the fix is a release that asks for it.
+on:
+  schedule:
+    - cron: "37 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  compat:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --tmpfs /var/lib/postgresql/data
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      EVO_HUB_TEST_DSN: postgresql://postgres:test@localhost:5432/postgres
+    steps:
+      - name: Postgres without fsync
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -q
+          -c "ALTER SYSTEM SET fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off" -c "SELECT pg_reload_conf()"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: make setup EVO_AGENTS_REF=main
+      - name: The API main serves is the one the plugins ask for
+        id: api
+        run: |
+          echo "main=$(git -C .evo-agents rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          served=$(.venv/bin/python -m evo_agents.hub.server.core_plugin_api version)
+          required=$(.venv/bin/python -m evo_core_plugins api)
+          echo "served=$served" >> "$GITHUB_OUTPUT"
+          echo "required=$required" >> "$GITHUB_OUTPUT"
+          if [ "$served" != "$required" ]; then
+            echo "::error::evo-agents main serves core plugin API $served; the plugins ask for $required"
+            exit 1
+          fi
+      - run: make test PYTEST_ARGS="-n 4 --durations=20"
+      - name: Open or update the compat issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN: ${{ steps.api.outputs.main }}
+          SERVED: ${{ steps.api.outputs.served }}
+          REQUIRED: ${{ steps.api.outputs.required }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="compat: the core plugins fail against evo-agents main"
+          body=$(printf '%s\n\n- evo-agents main: %s\n- API main serves: %s\n- API the plugins ask for: %s\n- run: %s\n' \
+            "The nightly compat run failed." "${MAIN:-unknown}" "${SERVED:-unknown}" "${REQUIRED:-unknown}" "$RUN")
+          gh label create compat --color B60205 --description "The plugins against evo-agents main" --force
+          number=$(gh issue list --state open --label compat --json number,title \
+            --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --label compat --body "$body"
+          fi

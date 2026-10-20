@@ -1,0 +1,94 @@
+name: release
+
+# A v* tag whose version is evo_core_plugins.__version__ runs ci.yml (the checks and tests against the lock), then
+# builds the wheel and the sdist, and publishes them to PyPI by trusted publishing (OIDC: no PyPI token anywhere) in
+# the environment pypi, which a reviewer approves and which takes v* tags only. The build job writes the sha256 of the
+# wheel to the run's summary, as the line deploy/hub/core-plugins.txt of evo-agents pins.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tag matches evo_core_plugins.__version__
+        run: |
+          version=$(python -c 'import evo_core_plugins; print(evo_core_plugins.__version__)')
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match evo_core_plugins.__version__ $version"
+            exit 1
+          fi
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - name: The wheel declares no dependency and one entry point per plugin
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv smoke
+          smoke/bin/pip install --no-deps "$GITHUB_WORKSPACE"/dist/*.whl
+          smoke/bin/python -m evo_core_plugins api
+          smoke/bin/python - <<'EOF'
+          from importlib.metadata import distribution
+
+          import evo_core_plugins
+
+          found = distribution("evo-agents-core-plugins")
+          assert not found.requires, f"the wheel declares Requires-Dist: {found.requires}"
+          points = {point.name: point.value for point in found.entry_points.select(group="evo_agents.plugins")}
+          assert points == {name: f"evo_core_plugins.{name}:manifest" for name in evo_core_plugins.PLUGINS}, points
+          EOF
+      - name: The pin for evo-agents
+        run: |
+          wheel=$(ls dist/*.whl)
+          version=${GITHUB_REF_NAME#v}
+          hash=$(sha256sum "$wheel" | cut -d' ' -f1)
+          {
+            echo "### The pin for deploy/hub/core-plugins.txt of evo-agents"
+            echo
+            echo '```'
+            echo "evo-agents-core-plugins==$version --hash=sha256:$hash"
+            echo '```'
+            echo
+            echo "$(basename "$wheel"): sha256 $hash"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/evo-agents-core-plugins/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
