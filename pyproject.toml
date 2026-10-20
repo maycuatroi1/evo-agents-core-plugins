@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evo-agents-core-plugins"
+dynamic = ["version"]
+description = "The first-party core plugins of the evo-agents hub: Telegram and the chat history in the knowledge graph"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "maycuatroi" }]
+keywords = ["agents", "evo-agents", "hub", "plugins", "telegram"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+]
+# None, on purpose: the hub's image installs this distribution with --no-deps, and its plugins use only what the image
+# already holds (evo-ak with its hub-server extra: fastapi, pydantic, httpx). Declaring evo-ak would let a resolver
+# pull evo-ak from PyPI over the one the image builds from evo-agents' main (plugin_tests/test_packaging.py).
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/maycuatroi1/evo-agents-core-plugins"
+
+# One entry point per plugin, named as it was when evo-ak shipped it: the hub's store, the projects that enable a
+# plugin and the members' channels know a plugin by it.
+[project.entry-points."evo_agents.plugins"]
+telegram = "evo_core_plugins.telegram:manifest"
+chats = "evo_core_plugins.chats:manifest"
+
+[tool.setuptools.dynamic]
+version = { attr = "evo_core_plugins.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["evo_core_plugins*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# The checkout of evo-agents the tests run against (Makefile, EVO_AGENTS), when it sits in this directory.
+extend-exclude = [".evo-agents"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# ruff format wraps what it can at line-length; what is left is cosmetic
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+# evo-agents' tests package, which the tests import from the checkout, sorts with the first-party code.
+known-first-party = ["evo_core_plugins", "plugin_tests", "evo_agents", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests import pytest fixtures and take them as parameters of the same name
+"plugin_tests/**" = ["F811"]
+
+[tool.pytest.ini_options]
+# Not "tests": the tests import evo-agents' tests package (tests.hub) from the checkout, which a directory of that
+# name here would hide (conftest.py).
+testpaths = ["plugin_tests"]
+markers = [
+    "empty_db: hub_db is an empty database, not a copy of the migrated template (tests/hub/conftest.py of evo-agents)",
+]
+# Read by pytest-asyncio when it is installed (the tests do not need it); evo-agents' tests/conftest.py declares the
+# option otherwise, so pytest does not warn about an unknown key.
+asyncio_default_fixture_loop_scope = "function"
+
+# Each plugin stays in its own package (`lint-imports`): it reaches the hub through the API of core plugins, never
+# through another plugin. plugin_tests/test_api_imports.py keeps what a plugin imports of evo_agents to the API.
+[tool.importlinter]
+root_package = "evo_core_plugins"
+
+[[tool.importlinter.contracts]]
+id = "plugins-own-package"
+name = "No core plugin of this repository imports another"
+type = "independence"
+modules = ["evo_core_plugins.telegram", "evo_core_plugins.chats"]

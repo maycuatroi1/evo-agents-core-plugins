@@ -1,0 +1,278 @@
+"""No SQL in the plugins' Python, nor in their tests: a plugin reads and writes the hub through the API of core plugins
+(``evo_agents.hub.server.core_plugin_api``), and a test that looks at the hub's tables does so with SQLAlchemy Core on
+``evo_agents.hub.tables``. A version of evo-agents' tests/test_no_raw_sql.py, which keeps the hub to the same rule.
+
+The guard reads every module under evo_core_plugins and plugin_tests (this file aside) and reports, by file and line:
+
+- a string constant, or the static text of an f-string, holding uppercase SQL keywords in the shape a statement
+  gives them (``SELECT ... FROM``, ``WHERE``, ``RETURNING``, ``INSERT INTO``, ``SAVEPOINT x`` and the like); a
+  docstring is not code and is left alone, and a lone word such as ``"DELETE"`` (an HTTP method) is not SQL. The
+  value of an ``ondelete=`` or ``onupdate=`` argument is a referential action SQLAlchemy names a foreign key's with,
+  not a statement: when it is one of REFERENTIAL_ACTIONS (``ondelete="SET NULL"`` included) it is left alone, and
+  any other value there is read like every other string;
+- an import or use of ``psycopg.sql`` or of SQLAlchemy's ``text``, and any ``exec_driver_sql``;
+- a call of ``driver(``, the bridge to the raw psycopg connection of a transaction (``evo_agents.hub.db``), and any
+  other reach for that connection (``get_raw_connection``, ``driver_connection``).
+
+No place here keeps SQL: the migrations, the listener and the test databases that need it are evo-agents'. A change
+that only raw SQL can make adds its place to ALLOWED_SQL in the same pull request, with the reason.
+
+Standard library only: this runs without SQLAlchemy or psycopg.
+"""
+
+from __future__ import annotations
+
+import ast
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+SCANNED = ("evo_core_plugins", "plugin_tests")
+SELF = Path(__file__).resolve()  # the guard's own examples of SQL
+GUIDE = "docs/hub.md of evo-agents, section Data access"
+
+# Uppercase SQL keywords in the shape they take in a statement. Lowercase prose, log messages and identifiers do
+# not match; nor does a single keyword on its own.
+SQL = re.compile(
+    r"""
+    ^\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|TRUNCATE|SAVEPOINT|ROLLBACK|RELEASE|LISTEN|UNLISTEN
+          |NOTIFY|SET|RESET|SHOW|BEGIN|COMMIT|COPY|LOCK|GRANT|REVOKE|VACUUM|ANALYZE|EXPLAIN|VALUES|PRAGMA)\s+[\w(*'"%{]
+    | \bSELECT\b[\s\S]*\bFROM\b
+    | \bINSERT\s+INTO\b
+    | \bDELETE\s+FROM\b
+    | \bUPDATE\s+\w+\s+SET\b
+    | \b(?:WHERE|RETURNING|HAVING)\b
+    | \bON\s+CONFLICT\b
+    | \bFOR\s+(?:NO\s+KEY\s+)?(?:UPDATE|SHARE)\b
+    | \b(?:GROUP|ORDER|PARTITION)\s+BY\b
+    | \bJOIN\b
+    | \bUNION\b
+    | \bIS\s+(?:NOT\s+)?(?:NULL|TRUE|FALSE|DISTINCT)\b
+    | \b(?:AND|OR)\s+(?:NOT\s+)?\(?\w+(?:\.\w+)?\s*(?:=|<>|!=|<=|>=|<|>|@>|\?|IS\b|IN\b|LIKE\b|ILIKE\b|BETWEEN\b)
+    | (?:=|<>|!=)\s*(?:ANY|ALL)\s*\(
+    | \b\w+\s+(?:NOT\s+)?IN\s*\(
+    | \bNOT\s+EXISTS\b
+    | \bCASE\s+WHEN\b
+    | \b(?:LIMIT|OFFSET)\s+(?:%|:|\d|\{|ALL\b)
+    | %(?:\(\w+\))?s::\w+
+    | \bVALUES\s*\(
+    """,
+    re.VERBOSE,
+)
+# Placeholder for each value an f-string interpolates, so its static text still reads as one statement.
+HOLE = "x"
+# The arguments of ForeignKey and ForeignKeyConstraint that name a referential action, and the actions they take. The
+# guard leaves such a value alone only as the constant value of one of these arguments: "SET NULL" anywhere else is
+# still read as SQL.
+REFERENTIAL_ARGUMENTS = frozenset({"ondelete", "onupdate"})
+REFERENTIAL_ACTIONS = frozenset({"CASCADE", "SET NULL", "SET DEFAULT", "RESTRICT", "NO ACTION"})
+
+# The SQL a file keeps for good, with the reason: none.
+ALLOWED_SQL: dict[str, re.Pattern] = {}
+RAW_CONNECTION = frozenset({"get_raw_connection", "driver_connection"})
+
+
+@dataclass(frozen=True)
+class Finding:
+    path: str
+    line: int
+    what: str
+
+    def __str__(self) -> str:
+        return f"{self.path}:{self.line}: {self.what}"
+
+
+def _excerpt(text: str) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= 80 else flat[:77] + "..."
+
+
+class _Scanner(ast.NodeVisitor):
+    def __init__(self, path: str):
+        self.path = path
+        self.findings: list[Finding] = []
+        self.allowed_sql: re.Pattern | None = ALLOWED_SQL.get(path)  # the SQL this file may keep for good
+        self.sqlalchemy_names: set[str] = set()  # local names of the sqlalchemy and sqlalchemy.sql modules
+        self.psycopg_names: set[str] = set()  # local names of the psycopg module
+
+    def _add(self, node: ast.AST, what: str) -> None:
+        self.findings.append(Finding(self.path, node.lineno, what))
+
+    def _text(self, node: ast.AST, text: str) -> None:
+        if not SQL.search(text) or (self.allowed_sql and self.allowed_sql.search(text.strip())):
+            return
+        self._add(node, f"SQL in a string: {_excerpt(text)!r}")
+
+    def visit_Expr(self, node: ast.Expr) -> None:
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            return  # a docstring, or another bare string: not code
+        self.generic_visit(node)
+
+    def visit_keyword(self, node: ast.keyword) -> None:
+        value = node.value
+        if (
+            node.arg in REFERENTIAL_ARGUMENTS
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+            and value.value in REFERENTIAL_ACTIONS
+        ):
+            return  # ondelete="SET NULL": a foreign key's referential action, not a statement
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if isinstance(node.value, str):
+            self._text(node, node.value)
+
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            else:
+                parts.append(HOLE)
+                if isinstance(value, ast.FormattedValue):
+                    self.visit(value.value)
+        self._text(node, "".join(parts))
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name == "psycopg.sql" or alias.name.startswith("psycopg.sql."):
+                self._psycopg_sql(node, "imports psycopg.sql")
+            elif alias.name in ("sqlalchemy", "sqlalchemy.sql"):
+                self.sqlalchemy_names.add(alias.asname or alias.name.split(".")[0])
+            elif alias.name == "psycopg":
+                self.psycopg_names.add(alias.asname or "psycopg")
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = node.module or ""
+        names = {alias.name for alias in node.names}
+        if module == "psycopg.sql" or module.startswith("psycopg.sql.") or (module == "psycopg" and "sql" in names):
+            self._psycopg_sql(node, "imports psycopg.sql")
+        if module.split(".")[0] == "sqlalchemy" and "text" in names:
+            self._add(node, f"imports text from {module}, which runs a SQL string")
+        if module == "sqlalchemy" and "sql" in names:
+            self.sqlalchemy_names.update(alias.asname or "sql" for alias in node.names if alias.name == "sql")
+
+    def _psycopg_sql(self, node: ast.AST, what: str) -> None:
+        self._add(node, f"{what}, which builds SQL strings")
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        base = node.value.id if isinstance(node.value, ast.Name) else None
+        if node.attr == "exec_driver_sql":
+            self._add(node, "exec_driver_sql runs a SQL string")
+        elif node.attr in RAW_CONNECTION:
+            self._add(node, f"{node.attr} reaches the raw psycopg connection, which only evo_agents.hub.db does")
+        elif node.attr == "text" and base in self.sqlalchemy_names:
+            self._add(node, f"{base}.text runs a SQL string")
+        elif node.attr == "sql" and base in self.psycopg_names:
+            self._psycopg_sql(node, "uses psycopg.sql")
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+        if name == "driver":
+            self._add(node, "driver() hands out the raw psycopg connection, which only evo_agents.hub.jobs takes")
+        self.generic_visit(node)
+
+
+def scan_source(path: str, source: str) -> list[Finding]:
+    """What the guard reports in ``source``, the text of the module at ``path`` (relative to the repository)."""
+    scanner = _Scanner(path)
+    scanner.visit(ast.parse(source, filename=path))
+    return scanner.findings
+
+
+def scan(path: Path) -> list[Finding]:
+    return scan_source(path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8"))
+
+
+def modules() -> list[Path]:
+    found = []
+    for top in SCANNED:
+        found += [p for p in (ROOT / top).rglob("*.py") if "__pycache__" not in p.parts and p.resolve() != SELF]
+    return sorted(found)
+
+
+def _report(findings: list[Finding]) -> str:
+    lines = "\n".join(f"  {finding}" for finding in findings)
+    return f"SQL outside the allowed places; write it with SQLAlchemy Core ({GUIDE}):\n{lines}"
+
+
+def test_the_plugins_and_their_tests_hold_no_sql():
+    findings = [finding for path in modules() for finding in scan(path)]
+    assert not findings, _report(findings)
+
+
+def test_the_guard_reads_every_plugin_and_test():
+    scanned = {path.relative_to(ROOT).as_posix() for path in modules()}
+    assert "evo_core_plugins/telegram/server.py" in scanned and "evo_core_plugins/chats/kg.py" in scanned
+    assert "plugin_tests/test_telegram.py" in scanned and SELF.relative_to(ROOT).as_posix() not in scanned
+
+
+def test_the_places_allowed_for_good_exist():
+    for path in ALLOWED_SQL:
+        assert (ROOT / path).is_file(), f"{path} is allowed in plugin_tests/test_no_raw_sql.py but does not exist"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'QUERY = "SELECT id FROM runs WHERE state = %s"',
+        'conn.execute("UPDATE runs SET state = %s WHERE id = %s", (state, run))',
+        'conn.execute(f"DELETE FROM {table} WHERE id = %s", (row,))',
+        'sql = f"UPDATE runs SET {columns} WHERE id = %s"',
+        'where = " AND kind = %s"',
+        'clause = "state = ANY(%s)"',
+        'conn.execute("SAVEPOINT hub_defer")',
+        'conn.execute("INSERT INTO audit (action) VALUES (%s) RETURNING id", (a,))',
+        'conn.execute("SELECT count(*) FILTER (WHERE x) FROM t")',
+        'rows = "SELECT unnest(%s::bigint[])"',
+        'lock = "SELECT 1 FROM runs FOR UPDATE SKIP LOCKED"',
+        "from psycopg import sql",
+        "import psycopg.sql",
+        "from psycopg.sql import SQL, Identifier",
+        "import psycopg\npsycopg.sql.SQL('x')",
+        "from sqlalchemy import text",
+        "import sqlalchemy as sa\nsa.text('x')",
+        "await conn.exec_driver_sql('x')",
+        "raw = await driver(conn)",
+        "raw = await db.driver(conn)",
+        "raw = (await conn.get_raw_connection()).driver_connection",
+        # A referential action is left alone only as the value of ondelete= or onupdate=.
+        'action = "SET NULL"',
+        'conn.execute("SET NULL")',
+        'ACTIONS = {"notification_id": "SET NULL"}',
+        'fk = ForeignKey("users.id", on_delete="SET NULL")',
+        'fk = ForeignKey("users.id", ondelete="SET NULL; DELETE FROM users")',
+        'fk = ForeignKey("users.id", ondelete=f"SET NULL WHERE {x}")',
+        'conn.execute("UPDATE runs SET state = %s", ondelete="CASCADE")',
+        'fk = ForeignKey("SELECT id FROM users", ondelete="SET NULL")',
+    ],
+)
+def test_the_guard_reports_sql_in_each_shape(source):
+    assert scan_source("evo_core_plugins/example/server.py", source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '"""A docstring may say SELECT ... FOR UPDATE SKIP LOCKED: it is not code."""',
+        'def f():\n    """Locks the row with SELECT ... FOR UPDATE, then UPDATE runs SET state."""',
+        'response = client.request("DELETE", "/v1/runs/1")',
+        'fk = ForeignKey("users.id", ondelete="CASCADE")',
+        'fk = ForeignKey("users.id", ondelete="SET NULL")',
+        'ForeignKeyConstraint(["notification_id"], ["notifications.id"], ondelete="SET NULL", name="x_fkey")',
+        'sa.ForeignKeyConstraint(["a"], ["b.id"], ondelete="SET DEFAULT", onupdate="NO ACTION")',
+        'fk = ForeignKey("users.id", ondelete="RESTRICT", onupdate="SET NULL")',
+        'log.info("run deleted", extra={"state": "DELETE"})',
+        'message = "the run is queued; select a worker from the list"',
+        "stmt = select(runs.c.id).where(runs.c.state == 'queued').with_for_update(skip_locked=True)",
+        'HELP = "Update the plan, then select the step to run."',
+    ],
+)
+def test_the_guard_leaves_prose_and_core_alone(source):
+    assert scan_source("evo_core_plugins/example/server.py", source) == []
