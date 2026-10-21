@@ -5,7 +5,7 @@ and built on its API of core plugins alone (`evo_agents.hub.server.core_plugin_a
 
 | Plugin | Package | What it does |
 |---|---|---|
-| `telegram` | `evo_core_plugins.telegram` | The hub's Telegram channel: a member links a private chat from the web, gets decisions, proposals and notices there, and answers them with buttons or replies |
+| `telegram` | `evo_core_plugins.telegram` | The hub's Telegram channel: a member links a private chat from the web, gets decisions, proposals and notices there, with the files of a run and of a question as photos or documents, and answers them with buttons or replies |
 | `chats` | `evo_core_plugins.chats` | The messages of the hub's group chats in each project's knowledge graph, for who is in each chat |
 
 Both left evo-ak unchanged for their users: the same id, publisher (`evo-agents`) and entry point name, the same
@@ -19,7 +19,7 @@ image installs it from PyPI with `--no-deps --require-hashes`, from the line `de
 evo-agents pins:
 
 ```
-evo-agents-core-plugins==1.0.0 --hash=sha256:<the hash the release prints>
+evo-agents-core-plugins==1.1.0 --hash=sha256:<the hash the release prints>
 ```
 
 The wheel declares no dependency: the plugins use only what the image of the hub already holds (evo-ak with its
@@ -43,6 +43,20 @@ versions.
 | This distribution | API it asks for | evo-agents commit that serves it |
 |---|---|---|
 | 1.0.0 | 1.1 | `ad12d3ccbee695a6915b22f4512f11794f7944fb` (pull request #106) |
+| 1.1.0 | 1.1 | the same; the files of notifications come from a hub that gives channels `extra.outputs` (plan run-outputs) |
+
+### Releases
+
+- **1.1.0**: the channel `telegram` sends the files of a decision that waits and of a notice `run_outputs` (the files
+  a run's agent sent) for a project that is not restricted, from the presigned GETs the hub's prepare gives in
+  `extra.outputs` and `extra.outputs_count`. It fetches each file and uploads it with its name (Telegram takes a
+  document by URL only as a PDF or a ZIP): one message, or one group of at most 10, as photos when each file is a PNG,
+  JPEG or WebP of 10 MiB at most, as documents otherwise; at most 20 MiB a notification, each file within Telegram's
+  50 MiB, the rest counted on the hub. A notice's text is the caption, with the run's link; a decision's files go
+  first, and then its message with its buttons as a reply to them. A restricted project's message holds no file and no
+  file's name, as before, and its notice `run_outputs` says `Files from a run`. Without these keys the channel sends
+  text, as 1.0.0 did; the API it asks for stays 1.1, and the manifests stay 1.1.0.
+- **1.0.0**: `telegram` and `chats` out of evo-agents, unchanged for their users.
 
 ### A change of the API
 
@@ -72,7 +86,9 @@ checks out main instead of the lock, and `make lock` says whether `.evo-agents` 
 ## Tests
 
 `plugin_tests/test_telegram.py`, `test_telegram_model.py`, `fake_telegram.py` and `test_chats_kg_source.py` are the
-tests these plugins had in evo-agents. They use evo-agents' test helpers from the checkout at the lock: `tests.hub.pg`,
+tests these plugins had in evo-agents. `test_telegram_files.py` sends the files of notifications through the channel
+alone, and `test_telegram_outputs.py` through a hub that gives them; it skips with evo-agents at a commit whose hub
+gives channels no files. They use evo-agents' test helpers from the checkout at the lock: `tests.hub.pg`,
 `tests.hub.live`, the fixtures of `tests/hub/conftest.py` and functions of its test modules (`conftest.py` puts the
 checkout on `sys.path` and loads them). **These helpers are not part of the API of core plugins.** No wheel holds them
 and no version covers them: evo-agents may change one without changing the API's version, and the tests here then

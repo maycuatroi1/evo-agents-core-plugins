@@ -25,6 +25,14 @@ needs (its link, the outcome of an answer) are kept whole.
 The Bot FAQ asks a bot to stay near one message a second in one chat and about 30 a second overall
 (CHAT_INTERVAL_SECONDS, MESSAGES_PER_SECOND); the webhook takes at most INBOUND_UPDATES updates from one chat in
 INBOUND_SECONDS and drops the rest.
+
+The files of a decision that waits, and of a notice of a run's files (``run_outputs``), go with their message for a
+project that is not restricted: the hub's prepare gives them as ``extra.outputs``, at most 10, never an image taken
+out of a tool's result, each with a presigned GET of its bytes, and ``extra.outputs_count`` (``files_of``). They go
+as one message, or one group of at most MEDIA_GROUP_SIZE (sendMediaGroup): photos when every file may be one
+(PHOTO_TYPES within MAX_PHOTO_BYTES), documents otherwise, since Telegram groups a document with documents only. Of
+one notification at most MAX_MEDIA_BYTES go, each file within MAX_DOCUMENT_BYTES; the files left out are counted on
+the hub (``more_line``). A caption stays within MAX_CAPTION_CHARS, as a message's text does within MAX_TEXT_CHARS.
 """
 
 from __future__ import annotations
@@ -50,6 +58,16 @@ MESSAGES_PER_SECOND = 30  # and about 30 a second overall
 INBOUND_UPDATES, INBOUND_SECONDS = 5, 10.0  # updates one chat may send the webhook in that time
 PROPOSAL_ANSWERS = ("accept", "reject", "defer")
 PARSE_MODE = "HTML"
+MiB = 1024 * 1024
+MAX_CAPTION_CHARS = 1024  # Telegram's bound on a caption, counted after entities parsing: its HTML is never shorter
+MEDIA_GROUP_SIZE = 10  # the files one sendMediaGroup takes
+PHOTO_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})  # what goes as a photo; other images as documents
+MAX_PHOTO_BYTES = 10 * MiB  # Telegram's bound on a photo a bot uploads
+MAX_DOCUMENT_BYTES = 50 * MiB  # and on any other file
+MAX_MEDIA_BYTES = 20 * MiB  # what one notification uploads in all, so its delivery stays within the hub's 30 seconds
+UPLOAD_NAME_CHARS = 120  # of a document's name
+CAPTION_CHARS = 900  # of a file's own caption, so the count of the files left out still fits after it
+OUTPUT_NOTICE = "run_outputs"  # the notice of a run's files, as the hub's runs.OUTPUT_NOTICE names it
 
 NOTICE_WORDS = {  # as the web's Inbox names them, and the hub's evo_agents.hub.telegram.what_waits
     "push_default_branch": "Pushed to a default branch",
@@ -60,6 +78,7 @@ NOTICE_WORDS = {  # as the web's Inbox names them, and the hub's evo_agents.hub.
     "curator_paused": "Night shift paused",
     "author_waiting": "An author run waits for your reply",
     "builder_proposal": "A change of @builder waits for your approval",
+    OUTPUT_NOTICE: "Files from a run",
 }
 ANSWER_WORDS = {"accept": "Accept", "reject": "Reject", "defer": "Defer 7 days"}
 
@@ -285,14 +304,145 @@ def proposal_message(
 
 
 def notice_message(
-    *, project: str | None, notice_kind: str | None, title: str, body: str | None, url: str | None, link: str | None
+    *,
+    project: str | None,
+    notice_kind: str | None,
+    title: str,
+    body: str | None,
+    url: str | None,
+    link: str | None,
+    limit: int = MAX_TEXT_CHARS,
+    more: int = 0,
 ) -> Message:
-    """A notice: its kind, its title and its body as plain text (its markdown bold kept), and the web's button."""
+    """A notice: its kind, its title and its body as plain text (its markdown bold kept), and the web's button; within
+    ``limit`` characters (MAX_CAPTION_CHARS as the caption of its files), saying how many files the hub holds besides
+    the ones it goes with (``more``)."""
     head = NOTICE_WORDS.get(notice_kind or "", "Notice")
     lines = [f"<b>{escape(head)}</b>" + (f" in {escape(project)}" if project else ""), escape(title)]
     if body:
         lines += ["", _BOLD.sub(r"<b>\1</b>", escape(clip(body, BODY_CHARS)))]
-    return Message(fit("\n".join(lines), _link_line(url, link)), web_button(url))
+    return Message(fit("\n".join(lines), more_line(more) + _link_line(url, link), limit), web_button(url))
+
+
+# The files of a notification
+
+
+@dataclass(frozen=True)
+class File:
+    """A file of a notification as the hub's prepare gives it (one of ``extra.outputs``): ``url`` is a presigned GET
+    of its bytes, which works a few minutes."""
+
+    id: int
+    name: str
+    media_type: str
+    size: int
+    caption: str | None
+    url: str
+
+    @property
+    def photo(self) -> bool:
+        return self.media_type in PHOTO_TYPES and self.size <= MAX_PHOTO_BYTES
+
+
+@dataclass(frozen=True)
+class Files:
+    """The files a message goes with, oldest first, and how many files its notification has in all."""
+
+    files: list[File]
+    total: int
+
+    @property
+    def more(self) -> int:
+        """The files of the notification that do not go: past the group's size or the bytes' bound, or not fetched."""
+        return max(0, self.total - len(self.files))
+
+    @property
+    def photos(self) -> bool:
+        """Whether they go as photos: each may be one. A group of Telegram puts a document with documents only."""
+        return bool(self.files) and all(file.photo for file in self.files)
+
+
+_MEDIA_TYPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}")
+
+
+def _file(found) -> File | None:
+    """One of ``extra.outputs`` as a File, or None when it is not whole: data, never trusted to be."""
+    if not isinstance(found, Mapping):
+        return None
+    file_id, name, media_type = found.get("id"), found.get("name"), found.get("media_type")
+    size, caption, url = found.get("size"), found.get("caption"), found.get("url")
+    if type(file_id) is not int or not isinstance(name, str) or not name.strip():
+        return None
+    if not isinstance(media_type, str) or not _MEDIA_TYPE.fullmatch(media_type):
+        return None
+    if type(size) is not int or not 0 < size <= MAX_DOCUMENT_BYTES:
+        return None
+    if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+        return None  # no URL: the hub's pass had no store to sign it with
+    return File(file_id, name, media_type.lower(), size, caption if isinstance(caption, str) else None, url)
+
+
+def files_of(extra: Mapping | None) -> Files | None:
+    """The files a notification's message goes with, of what the hub's prepare gave in ``extra``: each whole, with a
+    URL and within MAX_DOCUMENT_BYTES, oldest first, at most MEDIA_GROUP_SIZE of them and MAX_MEDIA_BYTES in all; with
+    how many it has (``outputs_count``). None when none of them goes."""
+    found = extra.get("outputs") if isinstance(extra, Mapping) else None
+    if not isinstance(found, list):
+        return None
+    counted = extra.get("outputs_count")
+    total = max(counted if type(counted) is int else 0, len(found))
+    kept, size = [], 0
+    for file in filter(None, map(_file, found)):
+        if len(kept) == MEDIA_GROUP_SIZE:
+            break
+        if size + file.size <= MAX_MEDIA_BYTES:
+            kept.append(file)
+            size += file.size
+    return Files(kept, total) if kept else None
+
+
+def more_line(more: int) -> str:
+    """How many files of a notification the hub holds besides the ones its message goes with."""
+    if more <= 0:
+        return ""
+    return f"\n\n{more} more file{'' if more == 1 else 's'} on the hub."
+
+
+def file_captions(files: Files) -> list[str | None]:
+    """The caption of each file of a decision's message: the file's own, cut to fit, and on the last one how many
+    files the hub holds besides."""
+    captions = []
+    for index, file in enumerate(files.files):
+        own = escape(clip(file.caption, CAPTION_CHARS)) if file.caption else ""
+        tail = more_line(files.more) if index == len(files.files) - 1 else ""
+        captions.append(fit(own, tail if own else tail.strip(), MAX_CAPTION_CHARS) or None)
+    return captions
+
+
+def media_group(captions: Sequence[str | None], photos: bool) -> list[dict]:
+    """The ``media`` of a sendMediaGroup of files uploaded as ``file0``, ``file1``... in order, as photos or as
+    documents, each with its caption when it has one."""
+    group = []
+    for index, caption in enumerate(captions):
+        item = {"type": "photo" if photos else "document", "media": f"attach://file{index}"}
+        if caption:
+            item.update(caption=caption, parse_mode=PARSE_MODE)
+        group.append(item)
+    return group
+
+
+_UNSAFE_NAME = re.compile(r'[\x00-\x1f\x7f"\\]+')
+
+
+def upload_name(name: str) -> str:
+    """The name a file is uploaded with, which a document shows: the last part of its name, without control
+    characters, quotes or backslashes, at most UPLOAD_NAME_CHARS, its suffix kept."""
+    base = _UNSAFE_NAME.sub("_", name.rsplit("/", 1)[-1]).strip() or "file"
+    if len(base) > UPLOAD_NAME_CHARS:
+        stem, dot, suffix = base.rpartition(".")
+        keep = f".{suffix[:16]}" if dot and stem else ""
+        base = base[: UPLOAD_NAME_CHARS - len(keep)].rstrip() + keep
+    return base
 
 
 def answered_text(original: str, outcome: str) -> str:

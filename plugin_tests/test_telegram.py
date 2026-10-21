@@ -10,6 +10,7 @@ to the Bot FAQ's pace and waits out a 429; a project whose hub sink is cleared f
 name, the kind and the link only; and without its two variables the channel is off while the hub runs."""
 
 import itertools
+from collections import OrderedDict
 from datetime import timedelta
 from functools import partial
 from types import SimpleNamespace
@@ -73,6 +74,7 @@ def bot(monkeypatch):
     monkeypatch.setenv(server_telegram.SECRET_VARIABLE, SECRET)
     monkeypatch.delenv(server_telegram.API_URL_VARIABLE, raising=False)
     monkeypatch.setattr(server_telegram, "TRANSPORT", fake.transport())
+    monkeypatch.setattr(server_telegram, "_FILES_SENT", OrderedDict())  # what an earlier test's decision left
     waits: list[float] = []
 
     async def pause(seconds: float) -> None:

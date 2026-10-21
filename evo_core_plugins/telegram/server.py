@@ -50,6 +50,18 @@ answers the chat and Telegram's message_id (``model.message_ref``), kept as the 
 that chat finds its decision. A decision or proposal that no longer waits by then goes out as ``model.closed_message``,
 never with its text. A 429 waits the retry_after Telegram gives without counting a failed try.
 
+The files of a decision that waits and of a notice of a run's files go with them for a project that is not restricted
+(``model.files_of``): the channel fetches each file's bytes from the presigned GET the hub's prepare gave
+(``fetch``), within the 5 minutes it works, and uploads them as multipart/form-data with their names, since Telegram
+takes a document by URL only as a PDF or a ZIP and names it after the URL. A file whose bytes do not come is left out
+and counted on the hub, and the URL, which signs the GET, is never logged. A notice goes as one message or one group
+(sendPhoto, sendDocument, sendMediaGroup), its text the caption: the kind, the run and its link, and the web's button
+when it is one file. A decision's files go first as one message or group, each with its caption, and then its message
+with its buttons as a reply to them, the message kept as the delivery's external_id; when that message fails after
+its files went, the next try sends the message alone (``_FILES_SENT``). Telegram refusing the files (a 400) sends
+photos again as documents, then the text alone; a 429, a 403 or a chat not found on the files is what it is on a
+message.
+
 Hub admins see the bot and its webhook (GET /v1/admin/telegram) and register the webhook at the hub's public URL with
 the secret (POST /v1/admin/telegram/webhook, audited ``telegram.webhook``): `evo-agents hub admin telegram
 [--set-webhook]`; they unlink a member's chat with DELETE /v1/admin/users/{login}/telegram: `evo-agents hub admin
@@ -64,7 +76,8 @@ import json
 import logging
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -86,6 +99,10 @@ WEBHOOK_PATH = "/v1/telegram/webhook"
 ALLOWED_UPDATES = ["message", "callback_query"]
 MAX_UPDATE_BYTES = 1024 * 1024
 CALL_TIMEOUT_SECONDS = 10.0
+UPLOAD_TIMEOUT_SECONDS = 25.0  # a call that uploads files, within the hub's 30 seconds for a delivery
+FETCH_TIMEOUT_SECONDS = 10.0  # each read of a file's bytes from the store
+FILES_SENT_SECONDS = 7200.0  # how long a decision's files that went are remembered, while its message did not
+MAX_FILES_SENT = 1000
 WEBHOOK_SET = "telegram.webhook"  # a hub admin pointed the bot's webhook at the hub: the URL
 TOKEN_VARIABLE, SECRET_VARIABLE = "EVO_HUB_TELEGRAM_BOT_TOKEN", "EVO_HUB_TELEGRAM_WEBHOOK_SECRET"
 API_URL_VARIABLE = "EVO_HUB_TELEGRAM_API_URL"  # where the Bot API is, so tests can point the channel at a fake one
@@ -108,6 +125,10 @@ TOO_LONG = "That answer is too long for the hub (4 KiB at most): answer on the w
 THE_HUBS_WORDS = {hub.NOT_YOURS: NOT_YOURS, hub.RESTRICTED_ANSWER: RESTRICTED_ANSWER}  # what this channel says instead
 
 TRANSPORT: httpx.AsyncBaseTransport | None = None  # tests put a fake Bot API here
+FETCH_TRANSPORT: httpx.AsyncBaseTransport | None = None  # and a fake store of files here; None: the network
+# (notification id, its created_at, chat id) -> (when, the first message of a decision's files that went), until its
+# message goes too: a delivery tried again after its message failed sends the message alone, as a reply to them.
+_FILES_SENT: OrderedDict[tuple, tuple[float, int]] = OrderedDict()
 pause = asyncio.sleep  # how the channel waits between messages; tests record it instead
 
 me_router = APIRouter(prefix="/v1/me", tags=["telegram"], responses={401: {"model": hub.ErrorBody}})
@@ -199,9 +220,23 @@ class BotApi:
 
     async def call(self, method: str, **params) -> Any:
         payload = {key: value for key, value in params.items() if value is not None}
+        return await self._post(method, CALL_TIMEOUT_SECONDS, json=payload)
+
+    async def upload(self, method: str, files: Sequence[Upload], **params) -> Any:
+        """``method`` with ``files`` uploaded as multipart/form-data, each under its field, and ``params`` as the
+        form's fields, a value that is not a string as JSON."""
+        fields = {
+            key: value if isinstance(value, str) else json.dumps(value)
+            for key, value in params.items()
+            if value is not None
+        }
+        parts = [(file.field, (file.name, file.content, file.media_type)) for file in files]
+        return await self._post(method, UPLOAD_TIMEOUT_SECONDS, data=fields, files=parts)
+
+    async def _post(self, method: str, timeout: float, **body) -> Any:
         try:
-            async with httpx.AsyncClient(timeout=CALL_TIMEOUT_SECONDS, transport=TRANSPORT) as client:
-                response = await client.post(self._base + method, json=payload)
+            async with httpx.AsyncClient(timeout=timeout, transport=TRANSPORT) as client:
+                response = await client.post(self._base + method, **body)
         except httpx.HTTPError as exc:  # its text can hold the URL, and so the token: only its kind is kept
             raise BotApiError(None, f"Telegram could not be reached ({type(exc).__name__})") from None
         try:
@@ -216,6 +251,16 @@ class BotApi:
         description = " ".join(str(found.get("description") or "no description").split())[:300]
         code = found.get("error_code") if isinstance(found.get("error_code"), int) else response.status_code
         raise BotApiError(code, description, float(retry) if isinstance(retry, (int, float)) else None)
+
+
+@dataclass(frozen=True)
+class Upload:
+    """A file a call uploads: the form's field it goes under, the name it shows, its bytes and its media type."""
+
+    field: str
+    name: str
+    content: bytes
+    media_type: str
 
 
 async def bot_username(app) -> str:
@@ -236,6 +281,91 @@ async def bot_username(app) -> str:
         raise HTTPException(502, "Telegram did not say who the hub's bot is")
     app.state.telegram_bot = username
     return username
+
+
+# The files of a notification
+
+
+@dataclass(frozen=True)
+class Fetched:
+    file: telegram.File
+    content: bytes
+
+
+async def _fetch_one(client: httpx.AsyncClient, file: telegram.File) -> bytes | None:
+    """The bytes of ``file`` from its presigned GET, or None when they do not come whole: an answer that is not 200, or
+    bytes more or fewer than the hub said. Logged by the file's id alone, never its URL, which signs the GET."""
+    try:
+        async with client.stream("GET", file.url) as response:
+            if response.status_code != 200:
+                log.warning("telegram file not fetched", extra={"output": file.id, "status": response.status_code})
+                return None
+            chunks, size = [], 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > file.size:
+                    break
+                chunks.append(chunk)
+    except httpx.HTTPError as exc:  # its text can hold the URL
+        log.warning("telegram file not fetched", extra={"output": file.id, "error": type(exc).__name__})
+        return None
+    if size != file.size:
+        log.warning("telegram file not fetched: not of its size", extra={"output": file.id})
+        return None
+    return b"".join(chunks)
+
+
+async def fetch(files: telegram.Files) -> list[Fetched]:
+    """The bytes of ``files``, in order, without those that do not come."""
+    fetched = []
+    async with httpx.AsyncClient(timeout=FETCH_TIMEOUT_SECONDS, transport=FETCH_TRANSPORT) as client:
+        for file in files.files:
+            content = await _fetch_one(client, file)
+            if content is not None:
+                fetched.append(Fetched(file, content))
+    return fetched
+
+
+def _gone(exc: BotApiError) -> bool:
+    return exc.code == 403 or (exc.code == 400 and "chat not found" in exc.description.lower())
+
+
+def _channel_error(exc: BotApiError) -> Exception:
+    """What a refusal of Telegram is to the hub's delivery: a 429 waits its retry_after, a blocked bot or a chat gone
+    turns the channel off, and anything else is a failed try."""
+    if exc.code == 429:
+        return hub.RetryAfter(exc.retry_after or 5, str(exc))
+    if _gone(exc):
+        return hub.ChannelGone(f"Telegram refused the chat ({exc.description}): link it again")
+    return exc
+
+
+def _sent_id(sent) -> int | None:
+    """The id of the message a call sent, or of the first of the group it sent."""
+    first = sent[0] if isinstance(sent, list) and sent else sent
+    found = first.get("message_id") if isinstance(first, dict) else None
+    return found if isinstance(found, int) else None
+
+
+def _files_key(notification: hub.Outgoing, chat_id: int) -> tuple:
+    return (notification.id, notification.created_at, chat_id)
+
+
+def _remember(key: tuple, message_id: int) -> None:
+    now = time.monotonic()
+    _FILES_SENT[key] = (now, message_id)
+    _FILES_SENT.move_to_end(key)
+    while _FILES_SENT and (
+        len(_FILES_SENT) > MAX_FILES_SENT or next(iter(_FILES_SENT.values()))[0] < now - FILES_SENT_SECONDS
+    ):
+        _FILES_SENT.popitem(last=False)
+
+
+def _recalled(key: tuple) -> int | None:
+    found = _FILES_SENT.get(key)
+    if found is None or found[0] < time.monotonic() - FILES_SENT_SECONDS:
+        return None
+    return found[1]
 
 
 # The channel
@@ -320,6 +450,18 @@ class TelegramChannel(hub.Channel):
         self._last[chat_id] = stamp
         self._recent.append(stamp)
 
+    def files(self, notification: hub.Outgoing) -> telegram.Files | None:
+        """The files the message of ``notification`` goes with: those of a decision that waits or of a notice, of a
+        project that is not restricted, as the hub's prepare gave them; None when it goes alone."""
+        extra = notification.extra or {}
+        if extra.get("restricted", True) or notification.kind not in ("decision", "notice"):
+            return None
+        if notification.kind == "decision":
+            decision = extra.get("decision")
+            if not decision or decision.get("state") != "open":  # its closed message goes, and nothing of it
+                return None
+        return telegram.files_of(extra)
+
     async def send(self, notification: hub.Outgoing, config: dict) -> str | None:
         bot = BotApi.from_settings(settings())
         if bot is None:
@@ -328,24 +470,125 @@ class TelegramChannel(hub.Channel):
         if not isinstance(chat_id, int):
             raise hub.ChannelGone("the channel names no Telegram chat: link it again")
         message = self.message(notification)
+        files = self.files(notification)
+        if files is None:
+            sent = await self._say(bot, chat_id, message)
+        elif notification.kind == "decision":
+            sent = await self._decision(bot, chat_id, notification, message, files)
+        else:
+            sent = await self._notice(bot, chat_id, notification, files)
+            if sent is None:  # none of its files went: its message alone, which names them
+                sent = await self._say(bot, chat_id, message)
+        message_id = _sent_id(sent)
+        return telegram.message_ref(chat_id, message_id) if message_id is not None else None
+
+    async def _say(self, bot: BotApi, chat_id: int, message: telegram.Message, reply_to: int | None = None) -> Any:
+        """Send ``message`` to the chat, as a reply to message ``reply_to`` when it names one."""
         await self._pace(chat_id)
         try:
-            sent = await bot.call(
+            return await bot.call(
                 "sendMessage",
                 chat_id=chat_id,
                 text=message.text,
                 parse_mode=telegram.PARSE_MODE,
                 reply_markup=message.reply_markup(),
+                reply_parameters={"message_id": reply_to, "allow_sending_without_reply": True} if reply_to else None,
                 link_preview_options={"is_disabled": True},
             )
         except BotApiError as exc:
-            if exc.code == 429:
-                raise hub.RetryAfter(exc.retry_after or 5, str(exc)) from None
-            if exc.code == 403 or (exc.code == 400 and "chat not found" in exc.description.lower()):
-                raise hub.ChannelGone(f"Telegram refused the chat ({exc.description}): link it again") from None
-            raise
-        message_id = sent.get("message_id") if isinstance(sent, dict) else None
-        return telegram.message_ref(chat_id, message_id) if isinstance(message_id, int) else None
+            raise _channel_error(exc) from None
+
+    async def _decision(
+        self, bot: BotApi, chat_id: int, notification: hub.Outgoing, message: telegram.Message, files: telegram.Files
+    ) -> Any:
+        """A decision's files, each with its caption, then its message with its buttons as a reply to them; the files
+        that went once do not go again when the message is tried again."""
+        key = _files_key(notification, chat_id)
+        first = _recalled(key)
+        if first is None:
+            fetched = await fetch(files)
+            if fetched:
+                went = telegram.Files([item.file for item in fetched], files.total)
+                first = _sent_id(
+                    await self._files(bot, chat_id, fetched, telegram.file_captions(went), None, went.photos)
+                )
+            if first is not None:
+                _remember(key, first)
+        sent = await self._say(bot, chat_id, message, reply_to=first)
+        _FILES_SENT.pop(key, None)
+        return sent
+
+    async def _notice(self, bot: BotApi, chat_id: int, notification: hub.Outgoing, files: telegram.Files) -> Any:
+        """A notice's files as one message or one group, its text their caption: what Telegram answered, or None when
+        none of them went."""
+        fetched = await fetch(files)
+        if not fetched:
+            return None
+        went = telegram.Files([item.file for item in fetched], files.total)
+        caption = telegram.notice_message(
+            project=notification.project,
+            notice_kind=notification.notice_kind,
+            title=notification.title,
+            body=notification.body,
+            url=hub.web_url(self.config, notification.link),
+            link=notification.link,
+            limit=telegram.MAX_CAPTION_CHARS,
+            more=went.more,
+        )
+        captions = [caption.text] + [None] * (len(fetched) - 1)
+        buttons = caption.reply_markup() if len(fetched) == 1 else None  # a group takes no buttons: its caption links
+        return await self._files(bot, chat_id, fetched, captions, buttons, went.photos)
+
+    async def _files(
+        self,
+        bot: BotApi,
+        chat_id: int,
+        fetched: list[Fetched],
+        captions: list[str | None],
+        buttons: dict | None,
+        photos: bool,
+    ) -> Any:
+        """Upload ``fetched`` to the chat as one message or one group, as photos when ``photos`` says they may be: what
+        Telegram answered, or None when it refused them (a 400) as documents too."""
+        for as_photos in (True, False) if photos else (False,):
+            await self._pace(chat_id)
+            try:
+                return await self._upload(bot, chat_id, fetched, captions, buttons, as_photos)
+            except BotApiError as exc:
+                if exc.code != 400 or _gone(exc):
+                    raise _channel_error(exc) from None
+                log.warning("telegram refused the files", extra={"code": exc.code, "photos": as_photos})
+        return None
+
+    async def _upload(
+        self,
+        bot: BotApi,
+        chat_id: int,
+        fetched: list[Fetched],
+        captions: list[str | None],
+        buttons: dict | None,
+        photos: bool,
+    ) -> Any:
+        """One call of the Bot API that uploads ``fetched``: one file goes under the field its method names (photo,
+        document), with ``buttons``; several as file0, file1... of one group, which takes no buttons."""
+        if len(fetched) == 1:
+            item = fetched[0]
+            kind = "photo" if photos else "document"
+            return await bot.upload(
+                "sendPhoto" if photos else "sendDocument",
+                [Upload(kind, telegram.upload_name(item.file.name), item.content, item.file.media_type)],
+                chat_id=chat_id,
+                caption=captions[0],
+                parse_mode=telegram.PARSE_MODE if captions[0] else None,
+                reply_markup=buttons,
+            )
+        uploads = [
+            Upload(f"file{index}", telegram.upload_name(item.file.name), item.content, item.file.media_type)
+            for index, item in enumerate(fetched)
+        ]
+        return await bot.upload(
+            "sendMediaGroup", uploads, chat_id=chat_id, media=telegram.media_group(captions, photos)
+        )
 
 
 # Where a member's link stands
