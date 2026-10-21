@@ -389,3 +389,113 @@ def test_a_decision_or_proposal_closed_before_its_message_says_so_and_nothing_el
     decision = telegram.closed_message("p&q", "decision", 9, None, "/inbox?decision=9")
     assert decision.text == "<b>p&amp;q</b>: Decision #9 no longer waits for your answer.\n\n/inbox?decision=9"
     assert decision.buttons == []
+
+
+# The files of a notification
+
+
+def output(file_id: int, name: str, media_type: str = "image/png", size: int = 100, **changes) -> dict:
+    """One of ``extra.outputs`` as the hub's prepare gives it, with a URL standing in for a presigned GET."""
+    url = f"https://store.test/blobs/{file_id:064x}?X-Amz-Signature=fake"
+    found = {"id": file_id, "name": name, "media_type": media_type, "viewer": "image", "size": size, "caption": None}
+    return {**found, "url": url, **changes}
+
+
+def test_a_message_goes_with_the_files_that_are_whole_with_a_url_and_within_telegrams_bounds():
+    extra = {
+        "restricted": False,
+        "outputs": [
+            output(1, "settings.png"),
+            output(2, "no-url.png", url=None),  # the hub's pass had no store to sign with
+            output(3, "empty.png", size=0),
+            output(4, "odd.bin", media_type="not a type"),
+            output(5, "huge.mp4", media_type="video/mp4", size=telegram.MAX_DOCUMENT_BYTES + 1),
+            "not an object",
+            output(7, "x.png", id="7"),
+            output(8, "out/report.md", media_type="text/markdown", caption="What changed"),
+        ],
+        "outputs_count": 12,
+    }
+    found = telegram.files_of(extra)
+    assert [(file.id, file.name, file.caption) for file in found.files] == [
+        (1, "settings.png", None),
+        (8, "out/report.md", "What changed"),
+    ]
+    assert (found.total, found.more, found.photos) == (12, 10, False)
+    for nothing in (
+        None,
+        {"restricted": True},
+        {"outputs": []},
+        {"outputs": "x"},
+        {"outputs": [output(2, "a", url=None)]},
+    ):
+        assert telegram.files_of(nothing) is None, nothing
+
+
+def test_one_notification_uploads_at_most_ten_files_and_twenty_mib_in_all():
+    eleven = telegram.files_of({"outputs": [output(n, f"{n}.png") for n in range(1, 12)], "outputs_count": 11})
+    assert len(eleven.files) == telegram.MEDIA_GROUP_SIZE == 10 and eleven.more == 1
+    mib = telegram.MiB
+    big = [output(1, "a.mp4", "video/mp4", 9 * mib), output(2, "b.mp4", "video/mp4", 9 * mib)]
+    big += [output(3, "c.mp4", "video/mp4", 9 * mib), output(4, "d.png", size=mib)]
+    found = telegram.files_of({"outputs": big, "outputs_count": 4})
+    assert [file.id for file in found.files] == [1, 2, 4] and found.more == 1  # the third would pass 20 MiB
+
+
+def test_files_go_as_photos_when_each_may_be_one_and_as_documents_otherwise():
+    def files(*outputs) -> telegram.Files:
+        return telegram.files_of({"outputs": list(outputs)})
+
+    assert files(output(1, "a.png"), output(2, "b.jpg", "image/jpeg"), output(3, "c.webp", "IMAGE/WEBP")).photos
+    for other in (
+        output(4, "d.svg", "image/svg+xml"),
+        output(5, "e.gif", "image/gif"),
+        output(6, "f.png", size=telegram.MAX_PHOTO_BYTES + 1),
+        output(7, "g.md", "text/markdown"),
+    ):
+        assert not files(output(1, "a.png"), other).photos, other["name"]
+    assert telegram.media_group(["After <b>the</b> fix", None], photos=True) == [
+        {"type": "photo", "media": "attach://file0", "caption": "After <b>the</b> fix", "parse_mode": "HTML"},
+        {"type": "photo", "media": "attach://file1"},
+    ]
+    assert [item["type"] for item in telegram.media_group([None, None], photos=False)] == ["document", "document"]
+
+
+def test_a_decisions_file_has_its_own_caption_cut_to_fit_and_the_last_counts_the_rest():
+    shown = telegram.files_of(
+        {"outputs": [output(1, "a.png", caption="After the fix & <b>"), output(2, "b.png")], "outputs_count": 4}
+    )
+    assert telegram.file_captions(shown) == ["After the fix &amp; &lt;b&gt;", "2 more files on the hub."]
+    long = telegram.files_of({"outputs": [output(1, "a.png", caption="& " * 2000)], "outputs_count": 2})
+    (caption,) = telegram.file_captions(long)
+    assert len(caption) <= telegram.MAX_CAPTION_CHARS and caption.endswith("...\n\n1 more file on the hub.")
+    assert "&am..." not in caption  # cut between entities, never inside one
+    alone = telegram.files_of({"outputs": [output(1, "a.png")]})
+    assert telegram.file_captions(alone) == [None]
+
+
+def test_a_notices_caption_keeps_its_link_and_counts_the_files_left_out():
+    message = telegram.notice_message(
+        project="lumen",
+        notice_kind="run_outputs",
+        title="Local run #7 sent 12 files",
+        body="- report.md (1.2 KiB): what changed\n" * 200,
+        url="https://hub.test/p/lumen/runs/7",
+        link="/p/lumen/runs/7",
+        limit=telegram.MAX_CAPTION_CHARS,
+        more=2,
+    )
+    assert len(message.text) <= telegram.MAX_CAPTION_CHARS
+    assert message.text.startswith("<b>Files from a run</b> in lumen\nLocal run #7 sent 12 files\n\n- report.md")
+    assert message.text.endswith("\n\n2 more files on the hub.\n\nhttps://hub.test/p/lumen/runs/7")
+    assert message.buttons == [[{"text": "Open on the hub", "url": "https://hub.test/p/lumen/runs/7"}]]
+    restricted = telegram.minimal_message("lumen", "notice", "run_outputs", None, "/p/lumen/runs/7")
+    assert restricted.text == "<b>lumen</b>: Files from a run.\n\n/p/lumen/runs/7"
+
+
+def test_a_file_is_uploaded_with_the_last_part_of_its_name_without_quotes_or_control_characters():
+    assert telegram.upload_name('out/dir/re"port\n.md') == "re_port_.md"
+    assert telegram.upload_name("bảng giá.png") == "bảng giá.png"
+    assert telegram.upload_name("") == telegram.upload_name("out/") == "file"
+    long = telegram.upload_name("x" * 300 + ".tar.gz")
+    assert len(long) == telegram.UPLOAD_NAME_CHARS and long.endswith("x.gz")
