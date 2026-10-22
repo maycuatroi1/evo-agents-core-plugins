@@ -19,7 +19,7 @@ image installs it from PyPI with `--no-deps --require-hashes`, from the line `de
 evo-agents pins:
 
 ```
-evo-agents-core-plugins==1.1.0 --hash=sha256:<the hash the release prints>
+evo-agents-core-plugins==1.2.0 --hash=sha256:<the hash the release prints>
 ```
 
 The wheel declares no dependency: the plugins use only what the image of the hub already holds (evo-ak with its
@@ -44,9 +44,13 @@ versions.
 |---|---|---|
 | 1.0.0 | 1.1 | `ad12d3ccbee695a6915b22f4512f11794f7944fb` (pull request #106) |
 | 1.1.0 | 1.1 | the same; the files of notifications come from a hub that gives channels `extra.outputs` (plan run-outputs) |
+| 1.2.0 | 1.2 | `86ff2f64f988081aa22b02cb5967d6fa8b207832` (pull request #174) |
 
 ### Releases
 
+- **1.2.0**: both plugins ask for API 1.2, the version in which a core plugin asks its agent types questions
+  (`ask_agent_type`); a hub that serves 1.1 leaves them out with that reason. What they do is that of 1.1.0, and the
+  manifests stay 1.1.0.
 - **1.1.0**: the channel `telegram` sends the files of a decision that waits and of a notice `run_outputs` (the files
   a run's agent sent) for a project that is not restricted, from the presigned GETs the hub's prepare gives in
   `extra.outputs` and `extra.outputs_count`. It fetches each file and uploads it with its name (Telegram takes a
