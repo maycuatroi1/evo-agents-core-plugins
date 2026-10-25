@@ -7,10 +7,19 @@ and built on its API of core plugins alone (`evo_agents.hub.server.core_plugin_a
 |---|---|---|
 | `telegram` | `evo_core_plugins.telegram` | The hub's Telegram channel: a member links a private chat from the web, gets decisions, proposals and notices there, with the files of a run and of a question as photos or documents, and answers them with buttons or replies |
 | `chats` | `evo_core_plugins.chats` | The messages of the hub's group chats in each project's knowledge graph, for who is in each chat |
+| `pm` | `evo_core_plugins.pm` | The daily report of a project's delivery, read from the hub's tasks, srs, plans, runs and decisions, sent as a digest with escalations of old blockers ([docs/pm-plugin.md](docs/pm-plugin.md)) |
+| `crm` | `evo_core_plugins.crm` | The people who found a project themselves, as contacts with a stage (lead, invited, activated, retained) pushed to Signal ([docs/crm-plugin.md](docs/crm-plugin.md)) |
+| `marketing` | `evo_core_plugins.marketing` | The project's channels and the posts proposed on them, through a posting gate, a breaker, a budget and the weekly bulletin ([docs/marketing-plugin.md](docs/marketing-plugin.md)) |
 
-Both left evo-ak unchanged for their users: the same id, publisher (`evo-agents`) and entry point name, the same
-routes, webhook path and variables (`EVO_HUB_TELEGRAM_*`), the same item ids (`plugin.chats:...`). Their manifests
-moved to version 1.1.0, so the hub's store records a new version of the image's plugins.
+Each left evo-ak unchanged for its users: the same id, publisher (`evo-agents`) and entry point name, the same routes,
+MCP tool names, pages, commands (`evo-agents hub pm|crm|marketing`), variables (`EVO_HUB_TELEGRAM_*`) and knowledge
+graph item ids (`plugin.chats:...`, `plugin.crm:...`). Their manifests moved to version 1.1.0, so the hub's store
+records a new version of the image's plugins.
+
+pm, crm and marketing carry their own tables (`tables.py`, the `schema.metadata` of the manifest) and their own chain
+of Alembic migrations (`migrations/`, version table `alembic_version_<id>`), whose first revision adopts the tables the
+hub's migrations made before, rows and all. Their pages are files under `ui/pages`, which the hub frames, and their
+commands a `cli.json` the CLI reads without importing the plugin, with the words without `--json` from `cli_text.py`.
 
 ## How the hub installs it
 
@@ -19,18 +28,18 @@ image installs it from PyPI with `--no-deps --require-hashes`, from the line `de
 evo-agents pins:
 
 ```
-evo-agents-core-plugins==1.2.0 --hash=sha256:<the hash the release prints>
+evo-agents-core-plugins==2.0.0 --hash=sha256:<the hash the release prints>
 ```
 
 The wheel declares no dependency: the plugins use only what the image of the hub already holds (evo-ak with its
-`hub-server` extra: FastAPI, pydantic, httpx). Declaring evo-ak would let a resolver pull evo-ak from PyPI over the
+`hub-server` extra: FastAPI, pydantic, httpx, SQLAlchemy, Alembic). Declaring evo-ak would let a resolver pull evo-ak from PyPI over the
 one the image builds from evo-agents' main. `plugin_tests/test_packaging.py` keeps both.
 
 ## The API of core plugins
 
-A plugin imports `evo_agents.hub.server.core_plugin_api` and nothing else of evo_agents, imports no SQLAlchemy, and
-reaches its own modules with relative imports (`plugin_tests/test_api_imports.py`, a copy of evo-agents'
-`tests/plugins/test_core_plugin_imports.py`). No plugin imports another (`lint-imports`, contract
+A plugin imports `evo_agents.hub.server.core_plugin_api` and nothing else of evo_agents, and uses SQLAlchemy Core on
+its own tables alone: nothing takes `text` from SQLAlchemy or calls `exec_driver_sql` (`plugin_tests/test_api_imports.py`,
+a copy of evo-agents' `tests/plugins/test_core_plugin_imports.py` as API 1.3 has it). No plugin imports another (`lint-imports`, contract
 `plugins-own-package`). Neither the plugins nor their tests hold raw SQL (`plugin_tests/test_no_raw_sql.py`).
 
 Each plugin's entry point names `manifest()`, which calls `hub.require(*API)` with the version of the API the plugin
@@ -45,9 +54,15 @@ versions.
 | 1.0.0 | 1.1 | `ad12d3ccbee695a6915b22f4512f11794f7944fb` (pull request #106) |
 | 1.1.0 | 1.1 | the same; the files of notifications come from a hub that gives channels `extra.outputs` (plan run-outputs) |
 | 1.2.0 | 1.2 | `86ff2f64f988081aa22b02cb5967d6fa8b207832` (pull request #174) |
+| 2.0.0 | 1.3 | `884b2c62c80175de1c0ecd47d34802035f006f97` (branch feat/lean-core-features, plan plugin-market) |
 
 ### Releases
 
+- **2.0.0**: `pm`, `crm` and `marketing` out of evo-agents, on the API alone, with their tables, migrations, pages,
+  commands, tests and docs; unchanged for their users. Every plugin asks for API 1.3, the version that gives a core
+  plugin its own tables and migrations, pages and commands; a hub that serves 1.2 leaves them all out with that reason.
+  The major version is new because the distribution now holds the tables of three plugins, which a hub must not also
+  hold: evo-agents drops its copies in the same move as it pins 2.0.0.
 - **1.2.0**: both plugins ask for API 1.2, the version in which a core plugin asks its agent types questions
   (`ask_agent_type`); a hub that serves 1.1 leaves them out with that reason. What they do is that of 1.1.0, and the
   manifests stay 1.1.0.
@@ -90,7 +105,8 @@ checks out main instead of the lock, and `make lock` says whether `.evo-agents` 
 ## Tests
 
 `plugin_tests/test_telegram.py`, `test_telegram_model.py`, `fake_telegram.py` and `test_chats_kg_source.py` are the
-tests these plugins had in evo-agents. `test_telegram_files.py` sends the files of notifications through the channel
+tests telegram and chats had in evo-agents; `test_pm_*.py`, `test_hub_pm_cli.py`, `test_crm_*.py`, `test_marketing_*.py`
+and `test_growth_*.py` the tests of pm, crm and marketing there (`tests/hub`). `test_telegram_files.py` sends the files of notifications through the channel
 alone, and `test_telegram_outputs.py` through a hub that gives them; it skips with evo-agents at a commit whose hub
 gives channels no files. They use evo-agents' test helpers from the checkout at the lock: `tests.hub.pg`,
 `tests.hub.live`, the fixtures of `tests/hub/conftest.py` and functions of its test modules (`conftest.py` puts the
@@ -99,9 +115,9 @@ and no version covers them: evo-agents may change one without changing the API's
 break at the next move of the lock or in the compat job, never on a hub.
 
 The directory is `plugin_tests`, not `tests`, so that evo-agents' `tests` package stays importable. Until evo-agents
-drops its own copies of `telegram` and `chats`, the evo-ak the tests install declares entry points of the same names;
-`plugin_tests/conftest.py` leaves those out, so the hub the tests start loads this checkout's plugins, and
-`plugin_tests/test_installed.py` checks that it does.
+drops its own copies of `pm`, `crm` and `marketing`, the evo-ak the tests install declares entry points of the same
+names; `plugin_tests/conftest.py` leaves those out, for the hub and for the commands the CLI lists, so both use this
+checkout's plugins, and `plugin_tests/test_installed.py` checks that they do.
 
 ## CI and releases
 

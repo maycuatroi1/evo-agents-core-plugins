@@ -18,8 +18,9 @@ PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 DISTRIBUTION = "evo-agents-core-plugins"
 GROUP = "evo_agents.plugins"
 # What the plugins import outside the standard library and evo_agents: the hub's image has each, from evo-ak's
-# hub-server extra (pyproject.toml of evo-agents).
-IMAGE_LIBRARIES = frozenset({"fastapi", "httpx", "pydantic"})
+# hub-server extra (pyproject.toml of evo-agents). sqlalchemy and alembic are for a plugin's own tables and its chain of
+# migrations (API 1.3).
+IMAGE_LIBRARIES = frozenset({"alembic", "fastapi", "httpx", "pydantic", "sqlalchemy"})
 
 
 def test_the_distribution_declares_no_dependency():
@@ -50,6 +51,24 @@ def _top_level_imports(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             found.add(node.module.partition(".")[0])
     return found
+
+
+def test_the_package_data_holds_every_file_a_plugin_reads_beside_its_python():
+    # cli.json, which the CLI reads without importing the plugin, and the files of its pages (ui/pages): a wheel
+    # without them gives a hub with no commands and no pages for the plugin.
+    patterns = PYPROJECT["tool"]["setuptools"]["package-data"]["*"]
+    files = [
+        path
+        for path in (ROOT / "evo_core_plugins").rglob("*")
+        if path.is_file() and path.suffix not in (".py", ".pyc") and "__pycache__" not in path.parts
+    ]
+    assert files
+    for path in files:
+        relative = path.relative_to(ROOT / "evo_core_plugins")
+        inner = Path(*relative.parts[1:])  # below the plugin's package
+        assert any(inner.match(pattern) and len(inner.parts) == len(Path(pattern).parts) for pattern in patterns), (
+            f"{relative} is not in [tool.setuptools.package-data] of pyproject.toml"
+        )
 
 
 def test_the_plugins_import_only_what_the_hubs_image_has():
