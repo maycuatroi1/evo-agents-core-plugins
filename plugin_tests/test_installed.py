@@ -49,7 +49,7 @@ def test_the_hub_loads_each_plugin_once_from_this_distribution():
 
 
 def test_what_another_distribution_declares_under_the_same_name_is_left_out():
-    # evo-ak at the commit of evo-agents.lock still ships telegram and chats; once it does not, nothing is hidden.
+    # evo-ak at the commit of evo-agents.lock still ships pm, crm and marketing; once it does not, nothing is hidden.
     hidden = conftest.shadowed(conftest._read(group=core.ENTRY_POINT_GROUP))
     assert {point.name for point in hidden} <= frozenset(PLUGINS)
     assert all(not point.value.startswith("evo_core_plugins.") for point in hidden)
@@ -73,6 +73,8 @@ def test_the_channel_of_kind_telegram_is_this_plugins():
     assert notifications.channel_class("telegram") is TelegramChannel
     assert hub.plugin("evo_core_plugins.telegram.server").id == "telegram"
     assert hub.plugin("evo_core_plugins.chats.kg").id == "chats"
+    for name in ("pm", "crm", "marketing"):
+        assert hub.plugin(f"evo_core_plugins.{name}.server").id == name
 
 
 def test_the_plugins_ask_for_the_api_this_evo_agents_serves():
@@ -104,12 +106,14 @@ def test_a_plugin_written_for_another_api_version_is_left_out_with_the_reason(na
 
 
 def test_the_command_refuses_plugins_that_ask_for_different_versions(tmp_path, capsys):
-    for name, api in zip(PLUGINS, [(1, 1), (1, 2)], strict=True):
+    apis = [(1, 1), *[(1, 2)] * (len(PLUGINS) - 1)]
+    for name, api in zip(PLUGINS, apis, strict=True):
         (tmp_path / name).mkdir()
         (tmp_path / name / "__init__.py").write_text(f"API = {api!r}\n", encoding="utf-8")
-    assert command.versions(tmp_path) == {"telegram": (1, 1), "chats": (1, 2)}
+    assert command.versions(tmp_path) == dict(zip(PLUGINS, apis, strict=True))
     assert command.main(["api"], tmp_path) == 1
-    assert "different versions of the API: telegram 1.1, chats 1.2" in capsys.readouterr().err
+    listed = ", ".join(f"{name} {major}.{minor}" for name, (major, minor) in zip(PLUGINS, apis, strict=True))
+    assert f"different versions of the API: {listed}" in capsys.readouterr().err
     assert command.main([]) == 2
     (tmp_path / "chats" / "__init__.py").write_text('API = "1.1"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="not \\(major, minor\\)"):
