@@ -1,0 +1,484 @@
+[
+  {
+    "name": "posts",
+    "help": "the posts by stage: the gate that waits, preview and url, how many review rounds",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "posts"
+    },
+    "args": [
+      {
+        "name": "stage",
+        "type": "string",
+        "in": "query",
+        "help": "only the posts at this stage of the project's config"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "array",
+      "keys": [
+        "slug",
+        "title",
+        "stage",
+        "waiting_gate",
+        "run",
+        "gates",
+        "rounds",
+        "preview_url",
+        "url"
+      ],
+      "schema": "EditorialPostSummary"
+    }
+  },
+  {
+    "name": "show",
+    "help": "one post with its gates, review rounds and comments",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "posts/{slug}"
+    },
+    "args": [
+      {
+        "name": "slug",
+        "type": "string",
+        "in": "path",
+        "positional": true,
+        "required": true,
+        "help": "the post's slug"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "slug",
+        "title",
+        "stage",
+        "branch",
+        "preview_url",
+        "url",
+        "published_at",
+        "d7",
+        "d28",
+        "waiting_gate",
+        "gates",
+        "rounds",
+        "history",
+        "feedback",
+        "created_at",
+        "updated_at",
+        "comment_id",
+        "run"
+      ],
+      "schema": "EditorialPost"
+    }
+  },
+  {
+    "name": "set",
+    "help": "set a post's stage, title, links, figures or a gate's state; a new slug makes the post (writer)",
+    "project": true,
+    "http": {
+      "method": "POST",
+      "path": "posts/{slug}"
+    },
+    "args": [
+      {
+        "name": "slug",
+        "type": "string",
+        "in": "path",
+        "positional": true,
+        "required": true,
+        "help": "the post's slug"
+      },
+      {
+        "name": "stage",
+        "type": "string",
+        "in": "body",
+        "help": "the stage it enters; one with a gate opens it"
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "in": "body",
+        "help": "the post's title"
+      },
+      {
+        "name": "branch",
+        "type": "string",
+        "in": "body",
+        "help": "the branch its draft is on"
+      },
+      {
+        "name": "preview_url",
+        "type": "string",
+        "in": "body",
+        "help": "the preview link of the draft"
+      },
+      {
+        "name": "url",
+        "type": "string",
+        "in": "body",
+        "help": "the published post"
+      },
+      {
+        "name": "published_at",
+        "type": "string",
+        "in": "body",
+        "help": "when it went out, ISO 8601"
+      },
+      {
+        "name": "d7",
+        "type": "string",
+        "in": "body",
+        "help": "the figures 7 days after it went out, as a JSON object"
+      },
+      {
+        "name": "d28",
+        "type": "string",
+        "in": "body",
+        "help": "the figures 28 days after it went out, as a JSON object"
+      },
+      {
+        "name": "evidence",
+        "type": "string",
+        "in": "body",
+        "help": "what shows it entered the stage"
+      },
+      {
+        "name": "gate",
+        "type": "string",
+        "in": "body",
+        "help": "the stage of the gate to set"
+      },
+      {
+        "name": "gate_state",
+        "type": "string",
+        "in": "body",
+        "choices": [
+          "waiting",
+          "answered",
+          "skipped"
+        ],
+        "help": "the gate's state"
+      },
+      {
+        "name": "via",
+        "type": "string",
+        "in": "body",
+        "help": "what the gate was answered through: hub when unsaid"
+      },
+      {
+        "name": "answer",
+        "type": "string",
+        "in": "body",
+        "help": "the answer to the gate, such as the option chosen"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "slug",
+        "title",
+        "stage",
+        "branch",
+        "preview_url",
+        "url",
+        "published_at",
+        "d7",
+        "d28",
+        "waiting_gate",
+        "gates",
+        "rounds",
+        "history",
+        "feedback",
+        "created_at",
+        "updated_at",
+        "comment_id",
+        "run"
+      ],
+      "schema": "EditorialPost"
+    }
+  },
+  {
+    "name": "recall",
+    "help": "what to read before a stage: its notebooks' entries and those about the post, seen most first",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "recall"
+    },
+    "args": [
+      {
+        "name": "stage",
+        "type": "string",
+        "in": "query",
+        "help": "the stage about to start"
+      },
+      {
+        "name": "post",
+        "type": "string",
+        "in": "query",
+        "help": "the post's slug"
+      },
+      {
+        "name": "q",
+        "type": "string",
+        "in": "query",
+        "flag": "--keyword",
+        "help": "only entries with every word of it"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "array",
+      "keys": [
+        "id",
+        "notebook",
+        "title",
+        "date",
+        "post",
+        "said",
+        "agent_wrote",
+        "agent_note",
+        "agent_after",
+        "person_fixed",
+        "fixed_note",
+        "fixed_after",
+        "rule",
+        "check",
+        "seen",
+        "probe_id",
+        "probe_task"
+      ],
+      "schema": "EditorialEntry"
+    }
+  },
+  {
+    "name": "feedback",
+    "help": "the feedback notebook: list its entries, add one (writer), or record that one came back (writer)",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "feedback"
+    },
+    "when": [
+      {
+        "arg": "entry",
+        "http": {
+          "method": "POST",
+          "path": "feedback/{entry}/repeat"
+        }
+      },
+      {
+        "arg": "said",
+        "http": {
+          "method": "POST",
+          "path": "feedback"
+        }
+      }
+    ],
+    "args": [
+      {
+        "name": "action",
+        "type": "string",
+        "in": "query",
+        "positional": true,
+        "required": true,
+        "choices": [
+          "list",
+          "add",
+          "repeat"
+        ],
+        "help": "list, add or repeat"
+      },
+      {
+        "name": "entry",
+        "type": "string",
+        "in": "path",
+        "positional": true,
+        "metavar": "PH",
+        "help": "with repeat: the entry, PH-<n>"
+      },
+      {
+        "name": "notebook",
+        "type": "string",
+        "in": "query",
+        "help": "list: only this notebook; add: the entry's notebook"
+      },
+      {
+        "name": "post",
+        "type": "string",
+        "in": "query",
+        "help": "list: only entries about this post; add: the post it came from"
+      },
+      {
+        "name": "stage",
+        "type": "string",
+        "in": "query",
+        "help": "list: only the notebooks read before this stage"
+      },
+      {
+        "name": "seen",
+        "type": "integer",
+        "in": "query",
+        "help": "list: only entries seen at least this many times"
+      },
+      {
+        "name": "q",
+        "type": "string",
+        "in": "query",
+        "flag": "--keyword",
+        "help": "list: only entries with every word of it"
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "in": "body",
+        "help": "add: the entry's title"
+      },
+      {
+        "name": "said",
+        "type": "string",
+        "in": "body",
+        "help": "add, repeat: what the person said, in their words"
+      },
+      {
+        "name": "date",
+        "type": "string",
+        "in": "body",
+        "help": "add: the day of the entry; repeat: when it was said; today when unsaid"
+      },
+      {
+        "name": "note",
+        "type": "string",
+        "in": "body",
+        "help": "add, repeat: where it was said, such as the post"
+      },
+      {
+        "name": "agent_wrote",
+        "type": "string",
+        "in": "body",
+        "help": "add: what the agent wrote"
+      },
+      {
+        "name": "person_fixed",
+        "type": "string",
+        "in": "body",
+        "help": "add: what the person changed it to"
+      },
+      {
+        "name": "rule",
+        "type": "string",
+        "in": "body",
+        "help": "add: the rule it gives"
+      },
+      {
+        "name": "check",
+        "type": "string",
+        "in": "body",
+        "help": "add: how the rule is checked"
+      },
+      {
+        "name": "probe_id",
+        "type": "integer",
+        "in": "body",
+        "help": "add: the curator probe that checks the rule"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "array",
+      "keys": [
+        "id",
+        "notebook",
+        "title",
+        "date",
+        "post",
+        "said",
+        "agent_wrote",
+        "agent_note",
+        "agent_after",
+        "person_fixed",
+        "fixed_note",
+        "fixed_after",
+        "rule",
+        "check",
+        "seen",
+        "probe_id",
+        "probe_task"
+      ],
+      "schema": "EditorialEntry"
+    }
+  },
+  {
+    "name": "import",
+    "help": "write the posts and entries of a JSON file, keeping their ids; a second run adds nothing (admin)",
+    "project": true,
+    "http": {
+      "method": "POST",
+      "path": "import"
+    },
+    "args": [
+      {
+        "name": "file",
+        "type": "file",
+        "in": "body",
+        "positional": true,
+        "required": true,
+        "help": "the JSON file, as export --format json prints it"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "posts_added",
+        "posts_updated",
+        "entries_added",
+        "entries_updated"
+      ],
+      "schema": "EditorialImported"
+    }
+  },
+  {
+    "name": "export",
+    "help": "the feedback notebook as its markdown files, or everything import takes",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "export"
+    },
+    "args": [
+      {
+        "name": "notebook",
+        "type": "string",
+        "in": "query",
+        "help": "only this notebook"
+      },
+      {
+        "name": "format",
+        "type": "string",
+        "in": "query",
+        "choices": [
+          "markdown",
+          "json"
+        ],
+        "help": "markdown (the default) or json"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "format",
+        "notebooks",
+        "document"
+      ],
+      "schema": "EditorialExport"
+    }
+  }
+]

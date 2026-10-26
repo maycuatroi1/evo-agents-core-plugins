@@ -10,6 +10,7 @@ and built on its API of core plugins alone (`evo_agents.hub.server.core_plugin_a
 | `pm` | `evo_core_plugins.pm` | The daily report of a project's delivery, read from the hub's tasks, srs, plans, runs and decisions, sent as a digest with escalations of old blockers ([docs/pm-plugin.md](docs/pm-plugin.md)) |
 | `crm` | `evo_core_plugins.crm` | The people who found a project themselves, as contacts with a stage (lead, invited, activated, retained) pushed to Signal ([docs/crm-plugin.md](docs/crm-plugin.md)) |
 | `marketing` | `evo_core_plugins.marketing` | The project's channels and the posts proposed on them, through a posting gate, a breaker, a budget and the weekly bulletin ([docs/marketing-plugin.md](docs/marketing-plugin.md)) |
+| `editorial` | `evo_core_plugins.editorial` | The posts of a blog through the stages and gates its config lists, the writer and judge agents that move them between a person's answers, their review rounds with the reviewers' draft comments, and the notebook of the reviewer's feedback with its probes and markdown export ([docs/editorial-plugin.md](docs/editorial-plugin.md)) |
 
 Each left evo-ak unchanged for its users: the same id, publisher (`evo-agents`) and entry point name, the same routes,
 MCP tool names, pages, commands (`evo-agents hub pm|crm|marketing`), variables (`EVO_HUB_TELEGRAM_*`) and knowledge
@@ -55,9 +56,16 @@ versions.
 | 1.1.0 | 1.1 | the same; the files of notifications come from a hub that gives channels `extra.outputs` (plan run-outputs) |
 | 1.2.0 | 1.2 | `86ff2f64f988081aa22b02cb5967d6fa8b207832` (pull request #174) |
 | 2.0.0 | 1.3 | `884b2c62c80175de1c0ecd47d34802035f006f97` (branch feat/lean-core-features, plan plugin-market) |
+| 2.1.0 | 1.4 | `3e42aad7d4c626f43d6cf86a529e188b9fb1e76f` (pull request #270) |
 
 ### Releases
 
+- **2.1.0**: the new plugin `editorial`: the posts of a blog through the stages and gates its config lists, a writer
+  agent that works on the post's branch between a person's answers, a judge agent that scores each review round in a
+  fresh context, reviewers' draft comments pulled into the round, and the notebook of the reviewer's feedback with its
+  recall, markdown export and probes. Every plugin asks for API 1.4, the version that lets a task work on a named
+  branch for up to 120 agent minutes and lets a core plugin add probes for its own rules; a hub that serves 1.3 leaves
+  them all out with that reason. What the other five plugins do is that of 2.0.0.
 - **2.0.0**: `pm`, `crm` and `marketing` out of evo-agents, on the API alone, with their tables, migrations, pages,
   commands, tests and docs; unchanged for their users. Every plugin asks for API 1.3, the version that gives a core
   plugin its own tables and migrations, pages and commands; a hub that serves 1.2 leaves them all out with that reason.
