@@ -10,6 +10,7 @@ and built on its API of core plugins alone (`evo_agents.hub.server.core_plugin_a
 | `pm` | `evo_core_plugins.pm` | The daily report of a project's delivery, read from the hub's tasks, srs, plans, runs and decisions, sent as a digest with escalations of old blockers ([docs/pm-plugin.md](docs/pm-plugin.md)) |
 | `crm` | `evo_core_plugins.crm` | The people who found a project themselves, as contacts with a stage (lead, invited, activated, retained) pushed to Signal ([docs/crm-plugin.md](docs/crm-plugin.md)) |
 | `marketing` | `evo_core_plugins.marketing` | The project's channels and the posts proposed on them, through a posting gate, a breaker, a budget and the weekly bulletin ([docs/marketing-plugin.md](docs/marketing-plugin.md)) |
+| `editorial` | `evo_core_plugins.editorial` | The posts of a blog through the stages and gates its config lists, their review rounds and comments, and the notebook of the reviewer's feedback with its markdown export ([docs/editorial-plugin.md](docs/editorial-plugin.md)) |
 
 Each left evo-ak unchanged for its users: the same id, publisher (`evo-agents`) and entry point name, the same routes,
 MCP tool names, pages, commands (`evo-agents hub pm|crm|marketing`), variables (`EVO_HUB_TELEGRAM_*`) and knowledge

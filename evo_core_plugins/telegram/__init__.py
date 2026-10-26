@@ -20,7 +20,7 @@ another leaves the plugin out with that reason, and the build of its image fails
 
 from evo_agents.hub.server import core_plugin_api as hub
 
-API = (1, 3)  # the version of the API of core plugins this plugin is written for
+API = (1, 4)  # the version of the API of core plugins this plugin is written for
 SERVER = "evo_core_plugins.telegram.server"
 
 MANIFEST = {
