@@ -23,6 +23,7 @@
         "title",
         "stage",
         "waiting_gate",
+        "run",
         "gates",
         "rounds",
         "preview_url",
@@ -68,7 +69,9 @@
         "history",
         "feedback",
         "created_at",
-        "updated_at"
+        "updated_at",
+        "comment_id",
+        "run"
       ],
       "schema": "EditorialPost"
     }
@@ -193,7 +196,9 @@
         "history",
         "feedback",
         "created_at",
-        "updated_at"
+        "updated_at",
+        "comment_id",
+        "run"
       ],
       "schema": "EditorialPost"
     }
@@ -246,7 +251,8 @@
         "rule",
         "check",
         "seen",
-        "probe_id"
+        "probe_id",
+        "probe_task"
       ],
       "schema": "EditorialEntry"
     }
@@ -402,7 +408,8 @@
         "rule",
         "check",
         "seen",
-        "probe_id"
+        "probe_id",
+        "probe_task"
       ],
       "schema": "EditorialEntry"
     }

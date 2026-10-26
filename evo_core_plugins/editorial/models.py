@@ -21,6 +21,16 @@ class EditorialGateSummary(BaseModel):
     answered_via: str | None = Field(None, description="what it was answered through: hub, cli, telegram...")
 
 
+class EditorialRun(BaseModel):
+    """The post's latest task run of the agent type writer."""
+
+    run_id: int | None = None
+    state: str | None = Field(None, description="running | done | failed | refused")
+    stage: str | None = Field(None, description="the stage the task was handed at")
+    error: str | None = Field(None, description="why it failed or was refused")
+    at: dt.datetime | None = None
+
+
 class EditorialPostSummary(BaseModel):
     """One post as ``posts`` lists it."""
 
@@ -32,12 +42,14 @@ class EditorialPostSummary(BaseModel):
     rounds: int = Field(description="how many review rounds the post had")
     preview_url: str | None = None
     url: str | None = Field(None, description="the published post")
+    run: EditorialRun | None = Field(None, description="the writer's latest run, none before the first")
 
 
 class EditorialGate(EditorialGateSummary):
     opened_at: dt.datetime
     answered_by: str | None = None
     answer: Any = None
+    ask: Any = Field(None, description="what the agent put to the person: proposals, questions")
 
 
 class EditorialComment(BaseModel):
@@ -48,6 +60,14 @@ class EditorialComment(BaseModel):
     at: dt.datetime | None = None
 
 
+class EditorialJudge(BaseModel):
+    """The judge's question of a round and what came of it."""
+
+    state: str | None = Field(None, description="pending | passed | below | failed | refused")
+    note: str | None = None
+    passed: bool = Field(description="the machine gate: every axis 4 or more")
+
+
 class EditorialRound(BaseModel):
     stage: str
     number: int
@@ -55,6 +75,7 @@ class EditorialRound(BaseModel):
     note: str | None = None
     feedback: list[str] = Field(description="the feedback entries the round wrote, PH-<n>")
     scores: dict | None = None
+    judge: EditorialJudge | None = None
     comments: list[EditorialComment]
 
 
@@ -73,7 +94,9 @@ class EditorialPost(BaseModel):
     branch: str | None = None
     preview_url: str | None = None
     url: str | None = None
+    comment_id: str | None = Field(None, description="the comment service keys its draft comments draft:<comment_id>")
     published_at: dt.datetime | None = None
+    run: EditorialRun | None = None
     d7: dict | None = Field(None, description="the figures a person wrote in 7 days after it went out")
     d28: dict | None = Field(None, description="the figures a person wrote in 28 days after it went out")
     waiting_gate: str | None = None
@@ -93,6 +116,7 @@ class EditorialSetIn(BaseModel):
     branch: str | None = Field(None, max_length=300)
     preview_url: str | None = Field(None, max_length=2000)
     url: str | None = Field(None, max_length=2000)
+    comment_id: str | None = Field(None, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
     published_at: dt.datetime | None = None
     d7: dict | str | None = Field(None, description="an object of figures, or its JSON text")
     d28: dict | str | None = Field(None, description="an object of figures, or its JSON text")
@@ -101,6 +125,9 @@ class EditorialSetIn(BaseModel):
     gate_state: str | None = Field(None, description=" | ".join(GATE_STATES))
     via: str | None = Field(None, max_length=100, description="what the gate was answered through; hub when unsaid")
     answer: Any = None
+    ask: Any = Field(
+        None, description="what to put to the person at the gate of the stage entered, or of gate: proposals, questions"
+    )
 
 
 class EditorialSaid(BaseModel):
@@ -128,6 +155,7 @@ class EditorialEntry(BaseModel):
     check: str | None = Field(None, description="the Kiểm line: how the rule is checked")
     seen: int = Field(description="Lần gặp: how many times it was seen")
     probe_id: int | None = None
+    probe_task: str | None = Field(None, description="the task of the probe; its verify only the admins read")
 
 
 class EditorialFeedbackIn(BaseModel):
@@ -144,6 +172,16 @@ class EditorialFeedbackIn(BaseModel):
     rule: str | None = Field(None, max_length=MAX_TEXT)
     check: str | None = Field(None, max_length=MAX_TEXT)
     probe_id: int | None = None
+    probe_task: str | None = Field(None, max_length=4000, description="the probe's task, with probe_verify (admin)")
+    probe_verify: str | None = Field(None, max_length=2000, description="one shell line, exit 0 when the rule was kept")
+
+
+class EditorialProbeIn(BaseModel):
+    """The probe of an entry: its task and verify, or remove to retire it (admin)."""
+
+    task: str | None = Field(None, max_length=4000)
+    verify: str | None = Field(None, max_length=2000)
+    remove: bool = False
 
 
 class EditorialRepeatIn(BaseModel):

@@ -5,7 +5,10 @@ A reader reads the posts (``GET /{project}/posts?stage=``), one post with its ga
 (``GET /{project}/posts/{slug}``), the feedback notebook (``GET /{project}/feedback?notebook=&stage=&post=&seen=&q=``),
 what to read before a stage (``GET /{project}/recall?stage=&post=&q=``) and the export (``GET /{project}/export``). A
 writer sets a post's state (``POST /{project}/posts/{slug}``), adds an entry (``POST /{project}/feedback``) and
-records a repeat (``POST /{project}/feedback/{entry}/repeat``). An admin imports (``POST /{project}/import``). Reads go
+records a repeat (``POST /{project}/feedback/{entry}/repeat``); a writer also reads the reviewers' draft comments into
+a post's latest round (``POST /{project}/posts/{slug}/comments``) and hands the writer agent its next task
+(``POST /{project}/posts/{slug}/run``). An admin gives an entry its probe (``POST /{project}/feedback/{entry}/probe``)
+and imports (``POST /{project}/import``). Reads go
 through the sink X-Evo-Sink names, else the project's hub sink: what the caller may not read is not there for them.
 
 ``evo-agents hub editorial feedback list|add|repeat`` is one command whose first word reaches the route as the query
@@ -29,12 +32,13 @@ from evo_core_plugins.editorial.models import (
     EditorialImportIn,
     EditorialPost,
     EditorialPostSummary,
+    EditorialProbeIn,
     EditorialRepeatIn,
     EditorialSetIn,
 )
 from evo_core_plugins.editorial.tables import NAME, SLUG
 
-REFUSALS = {code: {"model": hub.ErrorBody} for code in (403, 404, 409, 422)}
+REFUSALS = {code: {"model": hub.ErrorBody} for code in (403, 404, 409, 422, 502)}
 ProjectName = Annotated[str, Path(pattern=hub.PROJECT_NAME)]
 Slug = Annotated[str, Path(pattern=SLUG, description="the post's slug")]
 Sink = Annotated[str | None, Header(alias=store.SINK_HEADER)]
@@ -120,6 +124,26 @@ async def set_post(
     return _words(await _answer(request, work), render, cli_text.post)
 
 
+@router.post("/{project}/posts/{slug}/comments", response_model=EditorialPost)
+async def pull_comments(request: Request, project: ProjectName, slug: Slug, user: hub.Caller, sink: Sink = None):
+    """Read the reviewers' draft comments of the post into its latest review round, each once (writer)."""
+
+    async def work(conn):
+        return await service.pull_comments(conn, await service.viewer(conn, user, project, sink), slug)
+
+    return await _answer(request, work)
+
+
+@router.post("/{project}/posts/{slug}/run", response_model=EditorialPost)
+async def run_post(request: Request, project: ProjectName, slug: Slug, user: hub.Caller, sink: Sink = None):
+    """Hand the writer agent the post's next task now, such as after an error; 409 while a run of it runs (writer)."""
+
+    async def work(conn):
+        return await service.run_post(conn, await service.viewer(conn, user, project, sink), slug)
+
+    return await _answer(request, work)
+
+
 @router.get("/{project}/recall", response_model=list[EditorialEntry])
 async def recall(
     request: Request,
@@ -187,6 +211,24 @@ async def add_feedback(
         return [service.entry_model(await service.add_feedback(conn, who, given))]
 
     return _words(await _answer(request, work), render, cli_text.entries)
+
+
+@router.post("/{project}/feedback/{entry}/probe", response_model=EditorialEntry)
+async def probe_feedback(
+    request: Request,
+    project: ProjectName,
+    entry: Annotated[str, Path(max_length=20, description="the entry, PH-<n>")],
+    body: EditorialProbeIn,
+    user: hub.Caller,
+    sink: Sink = None,
+):
+    """Give the entry its curator probe (a task and a verify), in place of the one it has, or retire it (admin)."""
+
+    async def work(conn):
+        who = await service.viewer(conn, user, project, sink)
+        return service.entry_model(await service.probe_feedback(conn, who, entry, body))
+
+    return await _answer(request, work)
 
 
 @router.post("/{project}/feedback/{entry}/repeat", response_model=list[EditorialEntry])

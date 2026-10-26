@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from evo_agents.hub.server import core_plugin_api as hub
-from evo_core_plugins.editorial import document, ledger, settings, store
+from evo_core_plugins.editorial import document, flow, judge, ledger, probes, settings, store
 from evo_core_plugins.editorial.models import (
     EditorialComment,
     EditorialEntry,
@@ -26,11 +26,14 @@ from evo_core_plugins.editorial.models import (
     EditorialGate,
     EditorialGateSummary,
     EditorialImported,
+    EditorialJudge,
     EditorialNotebookFile,
     EditorialPost,
     EditorialPostSummary,
+    EditorialProbeIn,
     EditorialRepeatIn,
     EditorialRound,
+    EditorialRun,
     EditorialSaid,
     EditorialSetIn,
     EditorialStageEntered,
@@ -81,6 +84,18 @@ def _ordered(cfg: settings.Config, gates: list[store.Gate]) -> list[store.Gate]:
     return sorted(gates, key=lambda gate: (cfg.order(gate.stage), gate.opened_at))
 
 
+def _run(row: store.Post) -> EditorialRun | None:
+    if row.run_state is None:
+        return None
+    return EditorialRun(run_id=row.run_id, state=row.run_state, stage=row.run_stage, error=row.run_error, at=row.run_at)
+
+
+def _judge(item: store.Round) -> EditorialJudge | None:
+    if item.judge_state is None and item.scores is None:
+        return None
+    return EditorialJudge(state=item.judge_state, note=item.judge_note, passed=judge.passes(item.scores))
+
+
 def _summary_gate(gate: store.Gate) -> EditorialGateSummary:
     return EditorialGateSummary(
         stage=gate.stage, kind=gate.kind, state=gate.state, answered_at=gate.answered_at, answered_via=gate.answered_via
@@ -105,6 +120,7 @@ async def list_posts(conn: AsyncConnection, who: Viewer, stage: str | None = Non
             rounds=counts.get(row.id, 0),
             preview_url=row.preview_url,
             url=row.url,
+            run=_run(row),
         )
         for row in rows
     ]
@@ -136,7 +152,9 @@ async def show_post(conn: AsyncConnection, who: Viewer, slug: str) -> EditorialP
         branch=row.branch,
         preview_url=row.preview_url,
         url=row.url,
+        comment_id=row.comment_id,
         published_at=row.published_at,
+        run=_run(row),
         d7=row.d7,
         d28=row.d28,
         waiting_gate=_waiting(who.cfg, row.stage, gates),
@@ -150,6 +168,7 @@ async def show_post(conn: AsyncConnection, who: Viewer, slug: str) -> EditorialP
                 answered_via=gate.answered_via,
                 answered_by=gate.answered_by,
                 answer=gate.answer,
+                ask=gate.ask,
             )
             for gate in _ordered(who.cfg, gates)
         ],
@@ -161,6 +180,7 @@ async def show_post(conn: AsyncConnection, who: Viewer, slug: str) -> EditorialP
                 note=item.note,
                 feedback=list(item.feedback),
                 scores=item.scores,
+                judge=_judge(item),
                 comments=[
                     EditorialComment(id=c.external_id, author=c.author, quote=c.quote, text=c.text, at=c.at)
                     for c in item.comments
@@ -202,7 +222,8 @@ def _known_stage(cfg: settings.Config, stage: str) -> settings.Stage:
 
 async def set_post(conn: AsyncConnection, who: Viewer, slug: str, body: EditorialSetIn) -> EditorialPost:
     """Change a post, or make it when it is not there (which needs a stage). Entering a stage keeps it in the
-    history and opens the stage's gate, when the config gives it one; a gate's state is set with ``gate``."""
+    history and opens the stage's gate, when the config gives it one, which tells the gatekeepers (``flow``); a gate's
+    state is set with ``gate``, and an answer hands the writer the post's next task."""
     store.writer(who.access, "setting the state of a post")
     if not re.fullmatch(SLUG, slug):
         raise _unprocessable(f"{slug!r} is no slug: lower case letters, digits and -")
@@ -210,7 +231,7 @@ async def set_post(conn: AsyncConnection, who: Viewer, slug: str, body: Editoria
     if found is not None and not who.sees(found.label):
         raise _missing(who, slug)
     values: dict[str, Any] = {}
-    for name in ("title", "branch", "preview_url", "url", "published_at"):
+    for name in ("title", "branch", "preview_url", "url", "published_at", "comment_id"):
         if getattr(body, name) is not None:
             values[name] = getattr(body, name)
     for name in ("d7", "d28"):
@@ -227,22 +248,64 @@ async def set_post(conn: AsyncConnection, who: Viewer, slug: str, body: Editoria
         raise _unprocessable("gate_state, via and answer go with gate, the stage of the gate to set")
     if body.gate is not None and body.gate_state not in GATE_STATES:
         raise _unprocessable(f"give the state of the gate at {body.gate}: {', '.join(GATE_STATES)}")
-    if not values and body.gate is None:
+    if not values and body.gate is None and body.ask is None:
         raise _unprocessable("give something to set: a stage, a title, links, figures or a gate")
+    answering = body.gate is not None and body.gate_state in ("answered", "skipped")
+    if answering and found is not None:
+        if found.running:
+            raise hub.Refused(409, f"post {slug} has run #{found.run_id} running: answer once it stops at the gate")
+        gate_stage = who.cfg.stage(body.gate)
+        if gate_stage is not None and body.gate_state == "answered":
+            why = await flow.approval_refusal(conn, found, gate_stage, body.answer)
+            if why is not None:
+                raise hub.Refused(409, why)
     project = await hub.read_project(conn, settings.handle(), who.access.name)
     post_id = found.id if found is not None else None
     if values or post_id is None:
         post_id, _ = await store.put_post(conn, who.access.id, slug, values, dict(project.default_label))
+    opened = None
     if moved and stage is not None:
         await store.entered(conn, post_id, stage.name, dt.datetime.now(dt.UTC), body.evidence)
         if stage.gate is not None:
             await store.open_gate(conn, post_id, stage.name, stage.gate)
-    if body.gate is not None:
+            opened = stage
+    asked_at = body.gate if body.gate is not None else (opened.name if opened is not None else None)
+    if body.ask is not None:
+        if asked_at is None or not await store.ask_at_gate(conn, post_id, asked_at, body.ask):
+            raise _unprocessable("ask goes with the stage of a gate: enter it, or name it with gate")
+    if opened is not None:
+        await flow.gate_opened(conn, who.access.name, who.access.id, who.cfg, post_id, opened)
+    if body.gate is not None and body.gate_state is not None:
         changed = await store.answer_gate(
             conn, post_id, body.gate, body.gate_state, body.via or DEFAULT_VIA, who.session.user_id, body.answer
         )
         if not changed:
             raise hub.Refused(404, f"post {slug} has no gate at stage {body.gate}")
+        if answering:
+            await flow.hand_next(conn, who.access.name, who.cfg, post_id, answered=True)
+    return await show_post(conn, who, slug)
+
+
+async def pull_comments(conn: AsyncConnection, who: Viewer, slug: str) -> EditorialPost:
+    """Read the reviewers' comments on the post's draft into its latest round at its comments stage."""
+    store.writer(who.access, "reading the comments of a post")
+    post = await _seen_post(conn, who, slug, lock=True)
+    stage = flow.comments_stage(who.cfg, post)
+    if stage is None:
+        raise _unprocessable(f"post {slug} is at no stage with a comments gate, nor past one")
+    await flow.pull_comments(conn, who.cfg, post, stage.name)
+    return await show_post(conn, who, slug)
+
+
+async def run_post(conn: AsyncConnection, who: Viewer, slug: str) -> EditorialPost:
+    """Hand the writer the post's next task now, as after an answer (again after an error, say)."""
+    store.writer(who.access, "handing the writer a post")
+    post = await _seen_post(conn, who, slug, lock=True)
+    if who.cfg.repo is None:
+        raise _unprocessable("set repo, the repo of the posts, in the config of plugin editorial")
+    if post.running:
+        raise hub.Refused(409, f"post {slug} has run #{post.run_id} running: one task at a time")
+    await flow.hand_next(conn, who.access.name, who.cfg, post.id, answered=True)  # a refusal shows on the post
     return await show_post(conn, who, slug)
 
 
@@ -267,6 +330,7 @@ def entry_model(entry: store.Entry) -> EditorialEntry:
         check=entry.check,
         seen=entry.seen,
         probe_id=entry.probe_id,
+        probe_task=entry.probe_task,
     )
 
 
@@ -337,6 +401,9 @@ async def add_feedback(conn: AsyncConnection, who: Viewer, body: EditorialFeedba
     missing = [name for name in ("title", "said", "rule") if not (getattr(body, name) or "").strip()]
     if missing:
         raise _unprocessable(f"a new entry needs {', '.join(missing)}")
+    probing = bool(body.probe_task or body.probe_verify)
+    if probing:
+        store.admin(who.access, "giving an entry its probe")
     values = {
         "notebook": notebook,
         "title": body.title.strip(),
@@ -351,7 +418,31 @@ async def add_feedback(conn: AsyncConnection, who: Viewer, body: EditorialFeedba
         "probe_id": body.probe_id,
     }
     project = await hub.read_project(conn, settings.handle(), who.access.name)
-    return await store.add_entry(conn, who.access.id, values, dict(project.default_label))
+    made = await store.add_entry(conn, who.access.id, values, dict(project.default_label))
+    if not probing:
+        return made
+    await probes.put(
+        conn, who.access.name, who.access.id, who.cfg, made, body.probe_task or "", body.probe_verify or ""
+    )
+    found = await store.entry(conn, who.access.id, made.number)
+    assert found is not None
+    return found
+
+
+async def probe_feedback(conn: AsyncConnection, who: Viewer, entry: str, body: EditorialProbeIn) -> store.Entry:
+    """Give entry ``entry`` its probe (task and verify), in place of the one it has, or retire it with ``remove``."""
+    store.admin(who.access, "the probe of an entry")
+    number = entry_number(entry)
+    found = await store.entry(conn, who.access.id, number, lock=True)
+    if found is None or not who.sees(found.label):
+        raise hub.Refused(404, f"no entry {ledger.entry_id(number)} in project {who.access.name} that you can see")
+    if body.remove:
+        await probes.remove(conn, who.access.name, who.access.id, found)
+    else:
+        await probes.put(conn, who.access.name, who.access.id, who.cfg, found, body.task or "", body.verify or "")
+    changed = await store.entry(conn, who.access.id, number)
+    assert changed is not None
+    return changed
 
 
 def entry_number(text: str) -> int:
@@ -518,11 +609,12 @@ async def _document(conn: AsyncConnection, who: Viewer, entries: list[store.Entr
                     include={"slug", "title", "stage", "branch", "preview_url", "url", "published_at", "d7", "d28"},
                 ),
                 "history": [step.model_dump(mode="json") for step in shown.history],
-                "gates": [gate.model_dump(mode="json", exclude={"answered_by"}) for gate in shown.gates],
-                "rounds": [item.model_dump(mode="json") for item in shown.rounds],
+                "gates": [gate.model_dump(mode="json", exclude={"answered_by", "ask"}) for gate in shown.gates],
+                "rounds": [item.model_dump(mode="json", exclude={"judge"}) for item in shown.rounds],
             }
         )
-    return {"posts": posts, "entries": [entry_model(entry).model_dump(mode="json") for entry in entries]}
+    shown = [entry_model(entry).model_dump(mode="json", exclude={"probe_task"}) for entry in entries]
+    return {"posts": posts, "entries": shown}
 
 
 async def export(conn: AsyncConnection, who: Viewer, notebook: str | None, form: str) -> EditorialExport:

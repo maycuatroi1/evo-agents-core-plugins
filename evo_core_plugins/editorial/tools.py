@@ -1,6 +1,7 @@
 """The MCP tools of the plugin editorial, for the agents that write a project's posts and the members on /mcp:
 ``editorial__state`` reads a post's state or sets it, ``editorial__recall`` gives what to read before a stage (by
-stage, post and keyword), ``editorial__feedback`` adds an entry to the feedback notebook or records that one came back.
+stage, post and keyword), ``editorial__feedback`` adds an entry to the feedback notebook, records that one came back or gives one its curator
+probe, ``editorial__comments`` reads the reviewers' draft comments of a post into its latest review round.
 
 A call acts for the member ``hub.tool_caller`` names (the member at the origin of a chat run, the member's own session
 on /mcp), else for the member who dispatched the run, with that member's role in the project: a reader reads, a writer
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from evo_agents.hub.server import core_plugin_api as hub
 from evo_core_plugins.editorial import service, settings
-from evo_core_plugins.editorial.models import EditorialFeedbackIn, EditorialRepeatIn, EditorialSetIn
+from evo_core_plugins.editorial.models import EditorialFeedbackIn, EditorialProbeIn, EditorialRepeatIn, EditorialSetIn
 
 SET_FIELDS = tuple(EditorialSetIn.model_fields)
 
@@ -27,7 +28,8 @@ STATE_SCHEMA = {
         "set": {
             "type": "object",
             "description": "what to set: stage, title, branch, preview_url, url, published_at, d7, d28, evidence, "
-            "and gate with gate_state (waiting, answered, skipped), via and answer; left out, the post is read",
+            "comment_id, and gate with gate_state (waiting, answered, skipped), via and answer, and ask (what the "
+            "person is asked at the gate: proposals, questions); left out, the post is read",
             "properties": {name: {} for name in SET_FIELDS},
             "additionalProperties": False,
         },
@@ -46,8 +48,8 @@ RECALL_SCHEMA = {
 FEEDBACK_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["add", "repeat"]},
-        "entry": {"type": "string", "description": "repeat: the entry that came back, PH-<n>"},
+        "action": {"type": "string", "enum": ["add", "repeat", "probe"]},
+        "entry": {"type": "string", "description": "repeat, probe: the entry, PH-<n>"},
         "notebook": {"type": "string", "description": "add: the notebook of the project's config"},
         "title": {"type": "string", "description": "add: a short title"},
         "said": {"type": "string", "description": "what the person said, in their words"},
@@ -59,6 +61,9 @@ FEEDBACK_SCHEMA = {
         "rule": {"type": "string", "description": "add: the rule it gives"},
         "check": {"type": "string", "description": "add: how the rule is checked"},
         "probe_id": {"type": "integer", "description": "add: the curator probe that checks the rule"},
+        "probe_task": {"type": "string", "description": "add, probe: what an agent does in the repo of posts (admin)"},
+        "probe_verify": {"type": "string", "description": "add, probe: a shell line that exits 0 when the rule held"},
+        "remove": {"type": "boolean", "description": "probe: retire the entry's probe"},
     },
     "required": ["action"],
 }
@@ -138,6 +143,8 @@ async def feedback(params: dict, context: hub.Context) -> dict:
     async def work(conn, who, arguments):
         action = arguments.get("action")
         given = {key: value for key, value in arguments.items() if key not in ("action", "entry")}
+        if action != "probe":
+            given.pop("remove", None)
         if action == "add":
             entry = await service.add_feedback(conn, who, EditorialFeedbackIn.model_validate(given))
         elif action == "repeat":
@@ -145,11 +152,49 @@ async def feedback(params: dict, context: hub.Context) -> dict:
                 raise hub.Refused(422, "repeat takes the entry that came back, PH-<n>")
             body = EditorialRepeatIn.model_validate({k: given.get(k) for k in ("said", "date", "note")})
             entry = await service.repeat_feedback(conn, who, str(arguments["entry"]), body)
+        elif action == "probe":
+            if not arguments.get("entry"):
+                raise hub.Refused(422, "probe takes the entry, PH-<n>")
+            body = EditorialProbeIn.model_validate(
+                {
+                    "task": given.get("probe_task"),
+                    "verify": given.get("probe_verify"),
+                    "remove": bool(given.get("remove")),
+                }
+            )
+            entry = await service.probe_feedback(conn, who, str(arguments["entry"]), body)
         else:
-            raise hub.Refused(422, "action is add or repeat")
+            raise hub.Refused(422, "action is add, repeat or probe")
         return _json(service.entry_model(entry))
 
     return await _call(params, context, work)
 
 
-__all__ = ["FEEDBACK_SCHEMA", "RECALL_SCHEMA", "STATE_SCHEMA", "feedback", "recall", "state"]
+COMMENTS_SCHEMA = {
+    "type": "object",
+    "properties": {"slug": {"type": "string", "description": "the post's slug"}},
+    "required": ["slug"],
+}
+
+
+async def comments(params: dict, context: hub.Context) -> dict:
+    """``editorial__comments``: the post after reading its reviewers' draft comments into its latest round."""
+
+    async def work(conn, who, arguments):
+        if not arguments.get("slug"):
+            raise hub.Refused(422, "comments takes the post's slug")
+        return _json(await service.pull_comments(conn, who, str(arguments["slug"])))
+
+    return await _call(params, context, work)
+
+
+__all__ = [
+    "COMMENTS_SCHEMA",
+    "FEEDBACK_SCHEMA",
+    "RECALL_SCHEMA",
+    "STATE_SCHEMA",
+    "comments",
+    "feedback",
+    "recall",
+    "state",
+]

@@ -4,23 +4,27 @@ chain of migrations (``migrations``). Their keys point at the hub's projects and
 editorial_posts holds one row for each post of a project, by slug: its title, the stage it is at (one of the stages
 the project's config lists), the git branch it is written on, the link of its draft preview and the link of the
 published post, when it was published, the figures a person wrote in on day 7 and day 28 after it went out, and the
-label of the row (the project's default label when it was made).
+label of the row (the project's default label when it was made); the id the comment service keys its draft comments
+by (``comment_id``, read as ``draft:<comment_id>``), and the post's task run of the agent type writer (``run_*``: its
+id, running, done, failed or refused, the stage it was handed at, why it failed, when, and how many runs the post had
+since a person last answered a gate).
 
 editorial_stage_history holds each stage a post entered, when, and what showed it (a commit, a link).
 
 editorial_gates holds the gate of a post at each stage the config gives one: its kind (choose, interview, comments,
 publish), its state (waiting, answered, skipped), when it opened, and when, through what (hub, cli, telegram...)
-and by whom it was answered, with the answer.
+and by whom it was answered, with the answer, and what the agent put to the person (``ask``: the proposals to choose
+from, the questions of an interview).
 
 editorial_rounds holds the review rounds of a post at a stage, numbered from 1: when, a note, the feedback entries the
-round wrote (their PH ids) and the scores a judge gave; editorial_comments the comments of a round, each once by the
+round wrote (their PH ids), the scores the judge gave and the judge's question (its id, state and note); editorial_comments the comments of a round, each once by the
 id its source gave it, with its author, the sentence it marks and its text.
 
 editorial_feedback is the feedback notebook: one row for each entry PH-<number> of a project, in a notebook the config
 lists: its date, title and post, what the person said with when (``said``, a list of {text, date, note}), the sentence
 the agent wrote and the one the person fixed it to (each with a note and the place of its line among the said lines),
-the rule, the Kiểm line (``check_line``, how it is checked), how many times it was seen (Lần gặp) and the probe that
-watches it. ``ledger`` prints it as the notebook's markdown.
+the rule, the Kiểm line (``check_line``, how it is checked), how many times it was seen (Lần gặp), the probe that
+watches it and the task and verify a person wrote for that probe. ``ledger`` prints it as the notebook's markdown.
 """
 
 from __future__ import annotations
@@ -77,10 +81,18 @@ posts = Table(
     Column("label", JSONB, nullable=False, server_default="{}"),
     _stamp("created_at"),
     _stamp("updated_at"),
+    Column("comment_id", Text),
+    Column("run_id", BigInteger),
+    Column("run_state", Text),
+    Column("run_stage", Text),
+    Column("run_error", Text),
+    Column("run_at", DateTime(timezone=True)),
+    Column("run_count", Integer, nullable=False, server_default="0"),
     _key("editorial_posts", "project_id", "projects", ondelete="CASCADE"),
     PrimaryKeyConstraint("id", name="editorial_posts_pkey"),
     UniqueConstraint("project_id", "slug", name="editorial_posts_slug_key"),
     Index("editorial_posts_stage_idx", "project_id", "stage"),
+    Index("editorial_posts_run_idx", "project_id", "run_id"),
 )
 
 stage_history = Table(
@@ -109,6 +121,7 @@ gates = Table(
     Column("answered_via", Text),
     Column("answered_by", BigInteger),
     Column("answer", JSONB),
+    Column("ask", JSONB),
     _key("editorial_gates", "post_id", "editorial_posts", ondelete="CASCADE"),
     _key("editorial_gates", "answered_by", "users", ondelete="SET NULL"),
     PrimaryKeyConstraint("id", name="editorial_gates_pkey"),
@@ -127,6 +140,9 @@ rounds = Table(
     Column("note", Text),
     Column("feedback", JSONB, nullable=False, server_default="[]"),
     Column("scores", JSONB),
+    Column("question_id", BigInteger),
+    Column("judge_state", Text),
+    Column("judge_note", Text),
     _key("editorial_rounds", "post_id", "editorial_posts", ondelete="CASCADE"),
     PrimaryKeyConstraint("id", name="editorial_rounds_pkey"),
     UniqueConstraint("post_id", "stage", "number", name="editorial_rounds_number_key"),
@@ -171,6 +187,8 @@ feedback = Table(
     Column("label", JSONB, nullable=False, server_default="{}"),
     _stamp("created_at"),
     _stamp("updated_at"),
+    Column("probe_task", Text),
+    Column("probe_verify", Text),
     _key("editorial_feedback", "project_id", "projects", ondelete="CASCADE"),
     PrimaryKeyConstraint("id", name="editorial_feedback_pkey"),
     UniqueConstraint("project_id", "number", name="editorial_feedback_number_key"),

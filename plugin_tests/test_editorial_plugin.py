@@ -147,7 +147,7 @@ DOCUMENT = {
     ],
 }
 
-POST_KEYS = {"slug", "title", "stage", "waiting_gate", "gates", "rounds", "preview_url", "url"}
+POST_KEYS = {"slug", "title", "stage", "waiting_gate", "run", "gates", "rounds", "preview_url", "url"}
 GATE_KEYS = {"stage", "kind", "state", "answered_at", "answered_via"}
 
 
@@ -182,9 +182,18 @@ def project_id(db) -> int:
 def test_editorial_manifest_runs_no_job_and_asks_for_api_1_4():
     found = manifest()
     contributes = found["contributes"]
-    assert not contributes.get("jobs") and found["permissions"] == [] and found["version"] == "1.1.0"
+    assert not contributes.get("jobs") and found["permissions"] == [] and found["version"] == "1.2.0"
     assert [p["name"] for p in contributes["pages"]] == ["posts", "feedback"]
-    assert [t["name"] for t in contributes["mcp_tools"]] == ["state", "recall", "feedback"]
+    assert [t["name"] for t in contributes["mcp_tools"]] == ["state", "recall", "feedback", "comments"]
+    types = {t["name"]: t for t in contributes["agent_types"]}
+    assert set(types) == {"writer", "editor-judge"} and all(t["mentioned_by"] == "admin" for t in types.values())
+    assert "next gate, then stop" in types["writer"]["profile"]["instructions"]
+    assert types["writer"]["events"] == ["results"] and types["editor-judge"]["events"] == ["answers"]
+    assert {e["name"]: e["on"] for e in contributes["events"]} == {
+        "results": ["task.result"],
+        "answers": ["agent.answer"],
+    }
+    assert [k["name"] for k in contributes["notice_kinds"]] == ["editorial_gate", "editorial_failed"]
     assert [k["name"] for k in contributes["kg_sources"]] == ["notebook"]
     assert [t["name"] for t in contributes["tables"]] == list(editorial_tables.NAMES)
     assert {c["name"] for c in contributes["cli"]} == {"posts", "show", "set", "recall", "feedback", "import", "export"}

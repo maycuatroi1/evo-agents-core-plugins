@@ -5,6 +5,12 @@ one (choose, interview, comments, publish) and the notebooks to read before it (
 each with the title and intro its markdown starts with and whether every stage reads it (``always``). ``person`` is
 the name the notebook's lines give the person whose words they keep, ``reviewers`` the reviewers whose comments on a
 draft count, and ``daily_usd`` the most the agents of a post spend in a day.
+
+The flow of a post (``flow``) reads the rest: ``repo``, the repo of the project the agent type writer writes posts in
+(each on its branch ``post/<slug>``; without it the plugin hands no task and only keeps the state); ``skill``, the
+project's writing skill the writer follows; ``minutes``, the agent time of one task; ``gatekeepers``, the members a
+gate's notice goes to (the project's admins when none is listed); ``comments``, the comment service the draft comments
+are read from (a Firebase project and its web API key, both public: the comments are readable without a credential).
 """
 
 from __future__ import annotations
@@ -17,7 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from evo_agents.hub.server import core_plugin_api as hub
 from evo_core_plugins.editorial.tables import GATE_KINDS, NAME
 
+REPO = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"  # a repo, a skill, a Firebase project or collection
+
 DEFAULT_PERSON = "Owner"
+DEFAULT_SKILL = "writing"
+DEFAULT_MINUTES = 60
 
 CONFIG = {
     "type": "object",
@@ -74,9 +84,51 @@ CONFIG = {
         },
         "daily_usd": {
             "title": "Cost cap a day (USD)",
-            "description": "The most the agents of a post spend in a day.",
+            "description": "The most the agents of a post spend in a day. Enable the agent type writer with this "
+            "daily_usd: the hub stops its tasks at it, and the post shows why.",
             "type": "number",
             "minimum": 0,
+        },
+        "repo": {
+            "title": "Repo of the posts",
+            "description": "The project's repo the writer writes posts in, each on its branch post/<slug>. Left out, "
+            "the plugin hands no task and only keeps the state of the posts.",
+            "type": "string",
+            "pattern": REPO,
+        },
+        "skill": {
+            "title": "Writing skill",
+            "description": "The project's skill the writer follows from a stage to the next gate.",
+            "type": "string",
+            "pattern": REPO,
+            "default": DEFAULT_SKILL,
+        },
+        "minutes": {
+            "title": "Agent time of a task (minutes)",
+            "description": "How long one task of the writer may run.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": hub.MAX_TASK_MINUTES,
+            "default": DEFAULT_MINUTES,
+        },
+        "gatekeepers": {
+            "title": "Gatekeepers",
+            "description": "The members (logins) a gate's notice goes to; the project's admins when none is listed.",
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+        },
+        "comments": {
+            "title": "Comment service",
+            "description": "The Firebase project the draft comments are kept in, and its web API key. Both are "
+            "public: the comments are read without a credential, as the blog's pages read them.",
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "pattern": REPO},
+                "api_key": {"type": "string", "maxLength": 200},
+                "collection": {"type": "string", "pattern": REPO, "default": "marginalia_comments"},
+            },
+            "additionalProperties": False,
         },
     },
 }
@@ -99,12 +151,24 @@ class Notebook:
 
 
 @dataclass(frozen=True)
+class Comments:
+    project_id: str
+    api_key: str
+    collection: str = "marginalia_comments"
+
+
+@dataclass(frozen=True)
 class Config:
     stages: tuple[Stage, ...] = ()
     notebooks: tuple[Notebook, ...] = ()
     person: str = DEFAULT_PERSON
     reviewers: tuple[str, ...] = ()
     daily_usd: float | None = None
+    repo: str | None = None
+    skill: str = DEFAULT_SKILL
+    minutes: int = DEFAULT_MINUTES
+    gatekeepers: tuple[str, ...] = ()
+    comments: Comments | None = None
 
     @property
     def stage_names(self) -> tuple[str, ...]:
@@ -171,17 +235,41 @@ def _notebooks(value) -> tuple[Notebook, ...]:
     return tuple(found.values())
 
 
+def _word(value, default: str | None) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(REPO, value) else default
+
+
+def _texts(value) -> tuple[str, ...]:
+    return tuple(item for item in value if isinstance(item, str) and item) if isinstance(value, list) else ()
+
+
+def _comments(value) -> Comments | None:
+    if not isinstance(value, dict):
+        return None
+    project_id, key = _word(value.get("project_id"), None), value.get("api_key")
+    if project_id is None or not isinstance(key, str) or not key:
+        return None
+    return Comments(project_id, key, _word(value.get("collection"), None) or Comments.collection)
+
+
 def parse(values) -> Config:
     """The config of ``values`` (the effective values the hub gives), what does not read left out."""
     person = values.get("person")
-    reviewers = values.get("reviewers")
     cap = values.get("daily_usd")
+    minutes = values.get("minutes")
     return Config(
         _stages(values.get("stages")),
         _notebooks(values.get("notebooks")),
         person.strip() if isinstance(person, str) and person.strip() else DEFAULT_PERSON,
-        tuple(r for r in reviewers if isinstance(r, str) and r) if isinstance(reviewers, list) else (),
+        _texts(values.get("reviewers")),
         float(cap) if isinstance(cap, int | float) and not isinstance(cap, bool) and cap >= 0 else None,
+        _word(values.get("repo"), None),
+        _word(values.get("skill"), None) or DEFAULT_SKILL,
+        minutes
+        if isinstance(minutes, int) and not isinstance(minutes, bool) and 1 <= minutes <= hub.MAX_TASK_MINUTES
+        else DEFAULT_MINUTES,
+        _texts(values.get("gatekeepers")),
+        _comments(values.get("comments")),
     )
 
 
@@ -196,4 +284,4 @@ async def config(conn: AsyncConnection, project: str) -> Config:
     return parse(found.values)
 
 
-__all__ = ["CONFIG", "Config", "Notebook", "Stage", "config", "handle", "parse"]
+__all__ = ["CONFIG", "Comments", "Config", "Notebook", "Stage", "config", "handle", "parse"]

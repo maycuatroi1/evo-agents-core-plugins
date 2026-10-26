@@ -24,6 +24,7 @@ from evo_core_plugins.editorial import tables as t
 from evo_core_plugins.editorial.settings import handle
 
 PLUGIN = "editorial"
+RUNNING = "running"
 SINK_HEADER = "X-Evo-Sink"  # evo_agents.hub.server.plans.SINK_HEADER
 NUMBER_TRIES = 5
 
@@ -66,6 +67,17 @@ class Post:
     label: dict
     created_at: datetime
     updated_at: datetime
+    comment_id: str | None = None
+    run_id: int | None = None
+    run_state: str | None = None  # running, done, failed, refused
+    run_stage: str | None = None
+    run_error: str | None = None
+    run_at: datetime | None = None
+    run_count: int = 0
+
+    @property
+    def running(self) -> bool:
+        return self.run_state == RUNNING
 
 
 @dataclass(frozen=True)
@@ -79,6 +91,7 @@ class Gate:
     answered_via: str | None
     answered_by: str | None  # the login of the member who answered
     answer: Any
+    ask: Any = None  # what the agent put to the person
 
 
 @dataclass(frozen=True)
@@ -100,6 +113,9 @@ class Round:
     feedback: list
     scores: dict | None
     comments: list[Comment] = field(default_factory=list)
+    question_id: int | None = None
+    judge_state: str | None = None
+    judge_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +140,13 @@ def _post(row) -> Post:
         row.label,
         row.created_at,
         row.updated_at,
+        row.comment_id,
+        row.run_id,
+        row.run_state,
+        row.run_stage,
+        row.run_error,
+        row.run_at,
+        row.run_count,
     )
 
 
@@ -139,6 +162,25 @@ async def post(conn: AsyncConnection, project_id: int, slug: str, *, lock: bool 
     query = select(t.posts).where(p.project_id == project_id, p.slug == slug)
     row = (await conn.execute(query.with_for_update() if lock else query)).first()
     return _post(row) if row else None
+
+
+async def post_by_id(conn: AsyncConnection, post_id: int, *, lock: bool = False) -> Post | None:
+    query = select(t.posts).where(t.posts.c.id == post_id)
+    row = (await conn.execute(query.with_for_update() if lock else query)).first()
+    return _post(row) if row else None
+
+
+async def post_of_run(conn: AsyncConnection, project_id: int, run_id: int) -> Post | None:
+    """The post whose task run is ``run_id`` (the task's id), locked."""
+    p = t.posts.c
+    query = select(t.posts).where(p.project_id == project_id, p.run_id == run_id).with_for_update()
+    row = (await conn.execute(query)).first()
+    return _post(row) if row else None
+
+
+async def set_post_values(conn: AsyncConnection, post_id: int, values: Mapping) -> None:
+    """Write ``values`` (columns of editorial_posts) on the post."""
+    await conn.execute(update(t.posts).where(t.posts.c.id == post_id).values(**values, updated_at=func.now()))
 
 
 async def gates(conn: AsyncConnection, post_ids: Iterable[int]) -> dict[int, list[Gate]]:
@@ -163,6 +205,7 @@ async def gates(conn: AsyncConnection, post_ids: Iterable[int]) -> dict[int, lis
                 row.answered_via,
                 logins.get(row.answered_by),
                 row.answer,
+                row.ask,
             )
         )
     return found
@@ -187,9 +230,47 @@ async def rounds(conn: AsyncConnection, post_id: int) -> list[Round]:
         for row in await conn.execute(query):
             said.setdefault(row.round_id, []).append(Comment(row.external_id, row.author, row.quote, row.text, row.at))
     return [
-        Round(row.id, row.stage, row.number, row.at, row.note, row.feedback or [], row.scores, said.get(row.id, []))
+        Round(
+            row.id,
+            row.stage,
+            row.number,
+            row.at,
+            row.note,
+            row.feedback or [],
+            row.scores,
+            said.get(row.id, []),
+            row.question_id,
+            row.judge_state,
+            row.judge_note,
+        )
         for row in rows
     ]
+
+
+async def last_round(conn: AsyncConnection, post_id: int, stage: str) -> Round | None:
+    """The post's round of the highest number at ``stage``."""
+    found = [item for item in await rounds(conn, post_id) if item.stage == stage]
+    return max(found, key=lambda item: item.number) if found else None
+
+
+async def new_round(conn: AsyncConnection, post_id: int, stage: str, note: str | None) -> int:
+    """The post's next round at ``stage``, from now; its id."""
+    r = t.rounds
+    number = (await conn.scalar(select(func.max(r.c.number)).where(r.c.post_id == post_id, r.c.stage == stage))) or 0
+    return await put_round(
+        conn, post_id, {"stage": stage, "number": number + 1, "at": func.now(), "note": note, "feedback": []}
+    )
+
+
+async def round_of_question(conn: AsyncConnection, question_id: int) -> tuple[int, int] | None:
+    """(round id, post id) of the round whose judge's question is ``question_id``."""
+    r = t.rounds.c
+    row = (await conn.execute(select(r.id, r.post_id).where(r.question_id == question_id))).first()
+    return (row.id, row.post_id) if row else None
+
+
+async def set_round(conn: AsyncConnection, round_id: int, values: Mapping) -> None:
+    await conn.execute(update(t.rounds).where(t.rounds.c.id == round_id).values(**values))
 
 
 async def history(conn: AsyncConnection, post_id: int) -> list[Entered]:
@@ -245,6 +326,7 @@ async def open_gate(conn: AsyncConnection, post_id: int, stage: str, kind: str) 
                 "answered_via": None,
                 "answered_by": None,
                 "answer": None,
+                "ask": None,
             },
         )
     )
@@ -265,6 +347,15 @@ async def answer_gate(
             values["answer"] = answer
     found = await conn.scalar(
         update(g).where(g.c.post_id == post_id, g.c.stage == stage).values(**values).returning(g.c.id)
+    )
+    return found is not None
+
+
+async def ask_at_gate(conn: AsyncConnection, post_id: int, stage: str, ask: Any) -> bool:
+    """Keep what the agent puts to the person at the post's gate at ``stage``; whether the post has that gate."""
+    g = t.gates
+    found = await conn.scalar(
+        update(g).where(g.c.post_id == post_id, g.c.stage == stage).values(ask=ask).returning(g.c.id)
     )
     return found is not None
 
@@ -328,6 +419,8 @@ class Entry:
     probe_id: int | None
     label: dict
     updated_at: datetime
+    probe_task: str | None = None
+    probe_verify: str | None = None
 
     @property
     def id(self) -> str:
@@ -379,6 +472,8 @@ def _entry(row) -> Entry:
         row.probe_id,
         row.label,
         row.updated_at,
+        row.probe_task,
+        row.probe_verify,
     )
 
 
@@ -443,3 +538,11 @@ async def put_entry(conn: AsyncConnection, project_id: int, number: int, values:
         ).returning(f.c.created_at == f.c.updated_at)
     )
     return bool(made)
+
+
+async def set_entry(conn: AsyncConnection, project_id: int, number: int, values: Mapping) -> None:
+    """Write ``values`` (columns of editorial_feedback) on entry ``number``."""
+    f = t.feedback
+    await conn.execute(
+        update(f).where(f.c.project_id == project_id, f.c.number == number).values(**values, updated_at=func.now())
+    )
