@@ -58,9 +58,13 @@ versions.
 | 2.0.0 | 1.3 | `884b2c62c80175de1c0ecd47d34802035f006f97` (branch feat/lean-core-features, plan plugin-market) |
 | 2.1.0 | 1.4 | `3e42aad7d4c626f43d6cf86a529e188b9fb1e76f` (pull request #270) |
 | 2.1.1 | 1.4 | the same |
+| 2.1.2 | 1.4 | the same |
 
 ### Releases
 
+- **2.1.2**: `editorial` hands the writer a task on a gate's answer only when it came through the hub (`via` hub,
+  the default); an answer from inside a session (`claude-code`, `codex`) is kept and hands none, as that session goes
+  on itself. API 1.4, no migration.
 - **2.1.1**: `editorial` sets a post that is there without a stage (a title, links, figures) and keeps its stage,
   where 2.1.0 answered 500; a new post without a stage is still refused with 422. API 1.4, no migration.
 - **2.1.0**: the new plugin `editorial`: the posts of a blog through the stages and gates its config lists, a writer

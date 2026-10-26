@@ -98,10 +98,11 @@ The flow runs once the config names `repo`.
 2. **The person answers on the page.** A choose gate takes a proposal or a topic, an interview its answers and the
    approval of the brief, a comments gate "my comments are in" (`{"done": true}`) or the approval of the draft
    (`{"approve": true}`), a publish gate "the post is out" with its link. The answer is kept with `answered_via` hub.
-3. **The writer runs.** The answer hands the agent type `writer` a task on the branch `post/<slug>` of `repo`, for
-   `minutes` of agent time: follow the writing skill from the stage the post is at to the next gate, then stop. A post
+3. **The writer runs.** An answer through the hub (`via` hub, the default when unsaid) hands the agent type `writer`
+   a task on the branch `post/<slug>` of `repo`, for `minutes` of agent time: follow the writing skill from the stage the post is at to the next gate, then stop. A post
    has one task at a time: while its run runs, an answer is refused (409) and no other task goes out. At the last
-   stage no task goes out.
+   stage no task goes out. An answer given from inside a session (`via` another value, such as `claude-code`, `codex`
+   or `chat`) is kept but hands no task: that session goes on writing itself.
 4. **The run ends** (the event `task.result`). At a waiting gate, the post waits for the person. Short of a gate, the
    next task goes out, within the type's daily cap; after 6 runs in a row without a person's answer the post stops in
    the error state. After "my comments are in", the end of the run opens the next review round.
