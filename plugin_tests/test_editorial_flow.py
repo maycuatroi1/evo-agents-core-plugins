@@ -129,8 +129,8 @@ def notices(db, kind: str) -> list[tuple]:
     return sql(db, query)
 
 
-def post(client, headers, **body) -> dict:  # noqa: F811
-    return ok(client.post(f"{BASE}/posts/northwind-notes", json=body, headers=headers))
+def post(client, headers, slug: str = "northwind-notes", **body) -> dict:  # noqa: F811
+    return ok(client.post(f"{BASE}/posts/{slug}", json=body, headers=headers))
 
 
 def test_editorial_flow_gate_notice_answer_on_the_page_and_the_writer_runs_to_the_next_gate(client, flowing, hub_db):
@@ -165,6 +165,20 @@ def test_editorial_flow_gate_notice_answer_on_the_page_and_the_writer_runs_to_th
     shown = ok(client.get(f"{BASE}/posts/northwind-notes", headers=alice))
     assert shown["waiting_gate"] == "review" and shown["run"]["state"] == "done"
     assert [details["stage"] for *_, details in notices(hub_db, flow.NOTICE_GATE)] == ["idea", "review"]
+
+
+def test_editorial_flow_only_an_answer_through_the_hub_hands_the_writer_a_task(client, flowing, hub_db):
+    alice, owner = flowing["alice"], flowing["owner"]
+    post(client, alice, stage="idea", title="Lumen notes", slug="lumen-notes")
+    in_session = post(client, owner, slug="lumen-notes", gate="idea", gate_state="answered", via="claude-code")
+    gate = in_session["gates"][0]
+    assert gate["state"] == "answered" and gate["answered_via"] == "claude-code" and in_session["run"] is None
+    post(client, alice, stage="idea", title="Northwind lumen", slug="northwind-lumen")
+    from_codex = post(client, owner, slug="northwind-lumen", gate="idea", gate_state="skipped", via="codex")
+    assert from_codex["gates"][0]["state"] == "skipped" and from_codex["run"] is None
+    on_the_page = post(client, owner, slug="lumen-notes", gate="idea", gate_state="answered", via="hub")
+    assert on_the_page["gates"][0]["answered_via"] == "hub" and on_the_page["run"]["state"] == "running"
+    assert run_row(hub_db, on_the_page["run"]["run_id"])["title"] == "editorial lumen-notes: idea"
 
 
 def test_editorial_flow_a_failed_run_or_a_refused_task_shows_on_the_post_and_sends_a_notice(client, flowing, hub_db):

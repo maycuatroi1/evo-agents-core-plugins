@@ -223,7 +223,8 @@ def _known_stage(cfg: settings.Config, stage: str) -> settings.Stage:
 async def set_post(conn: AsyncConnection, who: Viewer, slug: str, body: EditorialSetIn) -> EditorialPost:
     """Change a post, or make it when it is not there (which needs a stage). Entering a stage keeps it in the
     history and opens the stage's gate, when the config gives it one, which tells the gatekeepers (``flow``); a gate's
-    state is set with ``gate``, and an answer hands the writer the post's next task."""
+    state is set with ``gate``, and an answer through the hub (``via`` hub, the default) hands the writer the post's
+    next task; one from inside a session (claude-code, codex) does not, as that session goes on itself."""
     store.writer(who.access, "setting the state of a post")
     if not re.fullmatch(SLUG, slug):
         raise _unprocessable(f"{slug!r} is no slug: lower case letters, digits and -")
@@ -281,7 +282,8 @@ async def set_post(conn: AsyncConnection, who: Viewer, slug: str, body: Editoria
         )
         if not changed:
             raise hub.Refused(404, f"post {slug} has no gate at stage {body.gate}")
-        if answering:
+        if answering and (body.via or DEFAULT_VIA) == DEFAULT_VIA:
+            # an answer from inside a session (claude-code, codex) leaves the writing to that session: no task
             await flow.hand_next(conn, who.access.name, who.cfg, post_id, answered=True)
     return await show_post(conn, who, slug)
 
