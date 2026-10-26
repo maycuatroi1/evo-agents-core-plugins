@@ -250,6 +250,24 @@ def test_editorial_a_writer_moves_a_post_through_the_stages_and_answers_its_gate
     assert "lumen-notes" in text and "review" in text
 
 
+def test_editorial_setting_a_post_without_a_stage_keeps_its_stage(client, editorial):
+    alice = editorial["alice"]
+    refused = client.post(f"{BASE}/posts/northwind-night", json={"title": "Night"}, headers=alice)
+    assert refused.status_code == 422 and "give its stage" in refused.text
+    ok(client.post(f"{BASE}/posts/northwind-night", json={"stage": "draft", "title": "Night"}, headers=alice))
+    kept = ok(
+        client.post(
+            f"{BASE}/posts/northwind-night",
+            json={"title": "Northwind at night", "preview_url": "https://preview.example.org/northwind-night"},
+            headers=alice,
+        )
+    )
+    assert kept["stage"] == "draft" and kept["title"] == "Northwind at night"
+    assert kept["preview_url"].endswith("northwind-night") and [h["stage"] for h in kept["history"]] == ["draft"]
+    same = ok(client.post(f"{BASE}/posts/northwind-night", json={"title": "Northwind at night"}, headers=alice))
+    assert same["stage"] == "draft" and same["title"] == "Northwind at night"
+
+
 def test_editorial_import_keeps_the_ids_and_a_second_run_adds_nothing(client, editorial):
     owner, alice, eve = editorial["owner"], editorial["alice"], editorial["eve"]
     assert client.post(f"{BASE}/import", json={"file": json.dumps(DOCUMENT)}, headers=alice).status_code == 403

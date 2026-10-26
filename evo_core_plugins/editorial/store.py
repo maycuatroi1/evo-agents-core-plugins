@@ -281,8 +281,21 @@ async def history(conn: AsyncConnection, post_id: int) -> list[Entered]:
 
 async def put_post(conn: AsyncConnection, project_id: int, slug: str, values: Mapping, label: dict) -> tuple[int, bool]:
     """Write post ``slug`` with ``values`` (columns of editorial_posts), making it when it is not there; (its id, whether
-    this call made it)."""
+    this call made it). A post that is there keeps the columns ``values`` leaves out, its stage among them, so only a
+    new post needs a stage."""
     p = t.posts
+
+    async def change() -> int | None:
+        return await conn.scalar(
+            update(p)
+            .where(p.c.project_id == project_id, p.c.slug == slug)
+            .values(**values, updated_at=func.now())
+            .returning(p.c.id)
+        )
+
+    found = await change()
+    if found is not None:
+        return found, False
     made = (
         await conn.execute(
             pg_insert(p)
@@ -293,13 +306,7 @@ async def put_post(conn: AsyncConnection, project_id: int, slug: str, values: Ma
     ).scalar()
     if made is not None:
         return made, True
-    found = await conn.scalar(
-        update(p)
-        .where(p.c.project_id == project_id, p.c.slug == slug)
-        .values(**values, updated_at=func.now())
-        .returning(p.c.id)
-    )
-    return found, False
+    return await change(), False
 
 
 async def entered(conn: AsyncConnection, post_id: int, stage: str, at: datetime, evidence: str | None) -> None:

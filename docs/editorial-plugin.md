@@ -160,7 +160,7 @@ prints without `--json`.
 | --- | --- |
 | `GET posts?stage=` | the posts in stage order: slug, title, stage, waiting_gate, run, gates (stage, kind, state, answered_at, answered_via), rounds (a count), preview_url, url |
 | `GET posts/{slug}` | one post with its gates (and their `ask`), rounds with comments and the judge's scores, its run, history and feedback ids |
-| `POST posts/{slug}` | set its stage, title, links, `comment_id`, figures, a gate's state (`gate`, `gate_state`, `via`, `answer`) or what is asked at a gate (`ask`); a new slug needs a stage |
+| `POST posts/{slug}` | set its stage, title, links, `comment_id`, figures, a gate's state (`gate`, `gate_state`, `via`, `answer`) or what is asked at a gate (`ask`); a new slug needs a stage, a post that is there keeps its stage when none is given |
 | `POST posts/{slug}/comments` | read the reviewers' draft comments into the latest round (writer); 502 when the service does not answer |
 | `POST posts/{slug}/run` | hand the writer the next task now (writer); 409 while a run of the post runs |
 | `GET recall?stage=&post=&q=` | what to read before a stage: the entries of the stage's notebooks and those about the post, seen most first |
