@@ -17,6 +17,47 @@ evo.messages("vi", {
     "round": "Vòng {number} ở {stage}",
     "history": "Các giai đoạn đã qua",
     "feedback": "Mục phản hồi",
+    "pullComments": "Đọc bình luận",
+    "run": {
+      "title": "Agent viết",
+      "at": "Lượt chạy #{run} từ bước {stage}",
+      "error": "Agent viết đã dừng",
+      "again": "Giao việc tiếp",
+      "states": {
+        "running": "Đang chạy",
+        "done": "Xong",
+        "failed": "Lỗi",
+        "refused": "Bị từ chối"
+      }
+    },
+    "answer": {
+      "wait": "Agent viết đang làm bài này; hãy trả lời khi nó dừng ở đây.",
+      "pick": "Chọn: {option}",
+      "topic": "Hoặc viết một chủ đề khác",
+      "useTopic": "Dùng chủ đề này",
+      "needTopic": "Hãy viết chủ đề trước.",
+      "approveBrief": "Gửi câu trả lời và duyệt dàn ý",
+      "commentsDone": "Tôi đã góp ý xong",
+      "approveDraft": "Duyệt bản nháp",
+      "url": "Đường dẫn bài đã đăng",
+      "published": "Bài đã đăng"
+    },
+    "judge": {
+      "title": "Giám khảo",
+      "states": {
+        "pending": "Đã hỏi",
+        "passed": "Đạt",
+        "below": "Dưới 4",
+        "failed": "Không trả lời",
+        "refused": "Chưa hỏi được"
+      },
+      "axes": {
+        "slop": "slop",
+        "giong": "giọng",
+        "nguon": "nguồn",
+        "hinh": "hình"
+      }
+    },
     "states": {
       "waiting": "Đang chờ",
       "answered": "Đã trả lời",

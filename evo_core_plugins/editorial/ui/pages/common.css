@@ -312,3 +312,10 @@
   grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 0.5rem;
 }
+.editorial-answer {
+  margin-top: var(--space-2);
+}
+.editorial-field textarea,
+.editorial-field input {
+  width: 100%;
+}

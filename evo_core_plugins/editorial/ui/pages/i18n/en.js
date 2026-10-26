@@ -17,6 +17,47 @@ evo.messages("en", {
     "round": "Round {number} at {stage}",
     "history": "Stages entered",
     "feedback": "Feedback entries",
+    "pullComments": "Read the comments",
+    "run": {
+      "title": "Writer agent",
+      "at": "Run #{run} from stage {stage}",
+      "error": "The writer stopped",
+      "again": "Hand the next task",
+      "states": {
+        "running": "Running",
+        "done": "Done",
+        "failed": "Failed",
+        "refused": "Refused"
+      }
+    },
+    "answer": {
+      "wait": "The writer agent is working on this post; answer once it stops here.",
+      "pick": "Pick: {option}",
+      "topic": "Or write another topic",
+      "useTopic": "Use this topic",
+      "needTopic": "Write the topic first.",
+      "approveBrief": "Send the answers and approve the brief",
+      "commentsDone": "My comments are in",
+      "approveDraft": "Approve the draft",
+      "url": "The published post's link",
+      "published": "The post is out"
+    },
+    "judge": {
+      "title": "Judge",
+      "states": {
+        "pending": "Asked",
+        "passed": "Passed",
+        "below": "Below 4",
+        "failed": "No answer",
+        "refused": "Not asked"
+      },
+      "axes": {
+        "slop": "slop",
+        "giong": "voice",
+        "nguon": "sources",
+        "hinh": "images"
+      }
+    },
     "states": {
       "waiting": "Waiting",
       "answered": "Answered",
