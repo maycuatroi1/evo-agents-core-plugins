@@ -22,6 +22,7 @@ TOOLS = "evo_core_plugins.jev.tools"
 TRIAGE = "evo_core_plugins.jev.triage"
 REVIEW = "evo_core_plugins.jev.review"
 CORRECTIONS = "evo_core_plugins.jev.corrections"
+RANK = "evo_core_plugins.jev.rank"
 REVIEW_CRON = "0 * * * *"  # every hour, after the builds that queue the review
 CORRECTIONS_CRON = "30 1 * * *"  # once a day, after the UTC day it reads has ended
 
@@ -79,7 +80,7 @@ def _tools() -> list[dict]:
 def _manifest() -> dict:
     return {
         "id": "jev",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "publisher": "evo-agents",
         "tier": "core",
         "name": "Jev",
@@ -126,6 +127,16 @@ def _manifest() -> dict:
                     "python": f"{CORRECTIONS}:on_job",
                     "cron": CORRECTIONS_CRON,
                 },
+            ],
+            "rankers": [
+                {
+                    "name": "rerank",
+                    "title": "Rank search hits with Jev",
+                    "description": "Puts the first 20 hits of history_search and kg_search in the order Jev scores "
+                    "them, in one request; leaves the order alone when Jev fails, is late or the budget is spent.",
+                    "python": f"{RANK}:rank",
+                    "sink": SINK,
+                }
             ],
             "tables": [{"name": name, "title": title} for name, title in TABLES],
             "cli": CLI,

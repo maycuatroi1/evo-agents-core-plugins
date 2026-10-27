@@ -196,7 +196,7 @@ def on_hub(client, work):
 def test_jev_manifest_declares_the_sink_the_config_the_tools_and_the_ledger():
     found = manifest()
     contributes = found["contributes"]
-    assert (found["id"], found["version"], found["permissions"]) == ("jev", "1.2.0", ["runs:read"])
+    assert (found["id"], found["version"], found["permissions"]) == ("jev", "1.3.0", ["runs:read"])
     assert found["egress"] == [{"id": "jev@typesafe", "kind": "llm-backend", "host": "api.typesafe.ai"}]
     assert [t["name"] for t in contributes["mcp_tools"]] == ["decide", "usage"]
     assert [(p["name"], p["entry"]) for p in contributes["pages"]] == [("jev", "pages/jev.html")]

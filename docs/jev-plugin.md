@@ -33,11 +33,11 @@ sink, so what a project's policy keeps from that sink never leaves the hub.
 | `triage_threshold`, `corrections_threshold` | the confidence an answer needs to be applied (0.9) |
 | `kg_review_noul_yes`, `kg_review_noul_no` | the noul value at or above which a review is applied as yes, at or below which as no (0.9, 0.1) |
 | `*_cap` | the most acts a feature applies by itself in a day (50) |
-| `rerank` | `off` (default) or `on` |
+| `rerank` | `off` (default) or `on`: the ranker below is called for the project's searches |
 
 ## What the plugin does by itself
 
-Three features act without a member asking. Each is off until its mode is set, and each passes the same gates as a
+Three features act without a member asking, and a fourth, rerank, answers when the hub's search asks. Each is off until its mode is set, and each passes the same gates as a
 call of a member: the plugin enabled in the project, an `api_key` and a pinned `model`, the sink declared, the mode not
 `off`, and the daily budget. A call has no member behind it, so its audit row has no actor. A feature asks a model
 about a subject once (table `jev_asked`): a call Jev failed or answered late is booked as an act of kind `skipped`,
@@ -72,6 +72,18 @@ with the keys `true` and `false`) or `score` (a list of 2 to 10 levels, lowest f
 Cost is input tokens times 0.042 USD per million. Before the call the plugin books an upper bound (the request bytes
 at that price) against `daily_usd` and refuses the call when it would pass it; afterwards it books the real figure.
 [Inference] Calls that run at the same moment can overshoot the budget by what each of them estimated.
+
+## Rerank
+
+The plugin contributes the ranker `rerank` (extension point `rankers`, sink `jev@typesafe`). When a project has
+`rerank` on, `history_search` and the hub's `kg_search` hand it the query and the first hits whose label the sink may
+read, at most 20. The plugin puts them to Jev in one request: the query and the hits are the state, and each hit is a
+`score` question on four ordered levels (unrelated, mentions the topic, partly answers, answers the query). The hits
+come back by score, highest first; equal scores keep the hub's order. The call is booked as feature `rerank` in
+`jev_usage` and is bound by the daily budget. The hub gives the whole search 2 seconds and the plugin waits 1.7: when
+Jev fails, is late, the budget is spent or the model that answered is not the pinned one, the ranker answers no
+order and the hub keeps the old one (`reranked` false). A late call still finishes and its cost is booked. It is not
+an act: nothing is changed, so there is nothing to undo, and the call is not recorded once per subject.
 
 ## Tools
 
@@ -134,5 +146,5 @@ evo-agents hub jev matches --project northwind
 `plugin_tests/test_jev_plugin.py` runs the plugin against a fake Jev server (an `httpx.MockTransport`), with the
 resolver and the transport of `evo_core_plugins.jev.client` replaced. Tests whose names hold `optional` show the plugin
 does nothing when it is not enabled, has no key, has no sink or has every feature off. `test_jev_triage.py`,
-`test_jev_review.py` and `test_jev_corrections.py` run each automatic feature against the same fake, with real runs,
+`test_jev_review.py`, `test_jev_corrections.py` and `test_jev_rank.py` run each feature against the same fake, with real runs,
 decisions, dismissals, sessions and signals on the hub.
