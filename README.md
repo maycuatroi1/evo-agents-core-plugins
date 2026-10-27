@@ -76,9 +76,16 @@ versions.
 | 2.1.2 | 1.4 | the same |
 | 2.2.0 | 1.5 | `49359c9ba0e5aca315f62520f03aeb127b05ac93` (pull request #293, plan chat-bridges) |
 | 2.3.0 | 1.5 | the same |
+| 2.4.0 | 1.6 | `64207689e8a3ed6709c873f5d7d94f01365c9f77` (pull request #297, plan jev-decisions) |
 
 ### Releases
 
+- **2.4.0**: the new plugin `jev`: asks the decision model Jev of TypeSafe through the tool `jev__decide`, keeps a cost
+  ledger and a list of what Jev did on a page and in the CLI, and, per project and per feature (off, suggest or apply),
+  classifies the cause of failed runs, reviews the knowledge graph queue, spots repeated corrections and reranks
+  `history_search` and `kg_search`. Above its threshold a result is applied (undoable), below it it is a suggestion.
+  Needs the sink `jev@typesafe` in the project's policy and an API key. Every plugin now asks for API 1.6, so this
+  release needs a hub that serves 1.6. Migration chain `jev_0001`, `jev_0002`.
 - **2.3.0**: the new plugin `okr`: a project's strategy as a tree (business line, objective, key result,
   deliverable) in its own tables, a deliverable linked to the hub's tasks, use cases and plans and a key result to its
   goal, each link checked against what the project holds. The roll-up is computed on read: a deliverable's progress
