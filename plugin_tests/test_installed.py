@@ -21,7 +21,7 @@ from evo_core_plugins import PLUGINS
 from evo_core_plugins import __main__ as command
 from plugin_tests import conftest
 
-OWN_VERSIONS = {"jev": "1.3.0"}  # a plugin added after evo-ak keeps its own manifest version, which its tests pin
+OWN_VERSIONS = {"jev": "1.4.0"}  # a plugin added after evo-ak keeps its own manifest version, which its tests pin
 MANIFEST_VERSION = "1.1.0"  # up from evo-ak's 1.0.0, so the hub's store records a new version of the image's plugins
 
 

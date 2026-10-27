@@ -239,6 +239,20 @@ def test_jev_review_a_failed_call_skips_the_item_and_is_not_repeated(client, jev
     assert [(a[0], a[2]) for a in acts(hub_db)] == [("skipped", False)]
 
 
+def test_jev_review_asks_a_duplicate_behind_a_long_head_of_other_rules(client, jev, hub_db, fake, graph):
+    """The queue is in the hub's rule order: the filter ``rules`` (API 1.7) is applied before the limit, so 500 items of
+    another rule ahead of the duplicate do not hide it."""
+    configure(client, jev["owner"], "jev", {"kg_review_mode": "apply"})
+    head = [
+        item(f"r:dangling{n:012d}", "dangling_mention", [node(f"northwind:doc:m{n}", "Document", f"m{n}")])
+        for n in range(500)
+    ]
+    graph["queue"] = {**QUEUE, "items": head + [i for i in QUEUE["items"] if i["fingerprint"] == DUP]}
+    says(fake, noul=0.99)
+    run(client, hub_db)
+    assert len(fake.requests) == 1 and [d[1] for d in decisions(hub_db)] == ["merge"]
+
+
 def test_jev_review_does_nothing_while_the_feature_is_off(client, jev, hub_db, fake, graph):
     assert run(client, hub_db) == {}
     assert graph["reads"] == 0

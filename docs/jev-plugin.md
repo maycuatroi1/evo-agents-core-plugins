@@ -2,7 +2,7 @@
 
 The plugin **jev** lets a project put questions about a state to Jev, the System One model of TypeSafe, and keeps what
 each call cost and what Jev decided. Its code is `evo_core_plugins/jev`; evo-agents-core-plugins ships it as a core
-plugin. It asks for API 1.6 of `core_plugin_api`, imports nothing else of the hub, keeps its tables with SQLAlchemy Core
+plugin. It asks for API 1.7 of `core_plugin_api`, imports nothing else of the hub, keeps its tables with SQLAlchemy Core
 and its own migration chain (`jev_0001`, `jev_0002`, version table `alembic_version_jev`), and imports no other plugin.
 
 It does nothing, and sends nothing, when any of these holds: the project has not enabled it, it has no `api_key`, the

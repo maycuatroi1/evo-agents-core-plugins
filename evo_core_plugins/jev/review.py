@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 FEATURE = "kg_review"
 RULES = ("possible_duplicate", "ambiguous_match")
 MAX_PER_PASS = 20  # questions a pass puts for one project: the queue is long, Jev is paid by the call
-READ_LIMIT = 100
+READ_LIMIT = 100  # counted after the filter on RULES (API 1.7), so another rule's long head cannot hide these
 UNSURE = "unsure"
 SAME = {
     "type": "noul",
@@ -86,7 +86,9 @@ async def on_job(params: dict, context: hub.Context) -> dict:
 
 async def _project(on: automatic.Setup) -> dict:
     async with hub.transaction(on.context) as conn:
-        found = await hub.read_review_queue(conn, store.handle(), on.project, on.context.config, limit=READ_LIMIT)
+        found = await hub.read_review_queue(
+            conn, store.handle(), on.project, on.context.config, limit=READ_LIMIT, rules=RULES
+        )
     if not found.items:
         return {"skipped": found.reason}
     seen = {"asked": 0, "applied": 0, "proposed": 0}
