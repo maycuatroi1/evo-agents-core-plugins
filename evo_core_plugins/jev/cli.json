@@ -1,0 +1,112 @@
+[
+  {
+    "name": "status",
+    "help": "whether Jev is set up in the project, what its features do and what it spent today",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "status"
+    },
+    "args": [],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "project",
+        "enabled",
+        "configured",
+        "key_set",
+        "model",
+        "base_url",
+        "sink",
+        "sink_declared",
+        "price_usd_per_million_tokens",
+        "daily_usd",
+        "spent_today_usd",
+        "features",
+        "problems"
+      ],
+      "schema": "JevStatus"
+    }
+  },
+  {
+    "name": "ask",
+    "help": "put questions about a state to Jev in one request, from a JSON file {state, questions} (writer)",
+    "project": true,
+    "http": {
+      "method": "POST",
+      "path": "ask"
+    },
+    "args": [
+      {
+        "name": "file",
+        "type": "file",
+        "in": "body",
+        "required": true,
+        "help": "the request: {state, questions}, as docs/jev-plugin.md has it"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "project",
+        "model",
+        "input_tokens",
+        "cost_usd",
+        "answers"
+      ],
+      "schema": "JevAsked"
+    }
+  },
+  {
+    "name": "usage",
+    "help": "what Jev cost in the last 24 hours and 7 days, against the daily budget",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "usage"
+    },
+    "args": [],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "project",
+        "model",
+        "price_usd_per_million_tokens",
+        "daily_usd",
+        "spent_today_usd",
+        "last_24h",
+        "last_7d"
+      ],
+      "schema": "JevUsage"
+    }
+  },
+  {
+    "name": "acts",
+    "help": "what Jev decided, newest first, with the command that undoes each applied act",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "acts"
+    },
+    "args": [
+      {
+        "name": "limit",
+        "type": "integer",
+        "in": "query",
+        "help": "how many acts, newest first (50 when unsaid)"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "project",
+        "acts"
+      ],
+      "schema": "JevActs"
+    }
+  }
+]
