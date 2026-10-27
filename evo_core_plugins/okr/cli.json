@@ -1,0 +1,486 @@
+[
+  {
+    "name": "tree",
+    "help": "the OKR tree with how far each item has come, its goals and its gaps",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "tree"
+    },
+    "args": [
+      {
+        "name": "status",
+        "type": "string",
+        "in": "query",
+        "choices": [
+          "draft",
+          "active",
+          "done",
+          "dropped",
+          "archived"
+        ],
+        "help": "the items of this status and those above them (every one but archived when unsaid)"
+      },
+      {
+        "name": "line",
+        "type": "string",
+        "in": "query",
+        "metavar": "ITEM",
+        "help": "one business line, by its code or ref"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "project",
+        "today",
+        "counts",
+        "roots",
+        "gaps"
+      ],
+      "schema": "OkrTree"
+    }
+  },
+  {
+    "name": "show",
+    "help": "one item with its parents, children, links, roll-up and gaps",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "items/{item}"
+    },
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "in": "path",
+        "positional": true,
+        "required": true,
+        "metavar": "ITEM",
+        "help": "the item's code (KR-3) or ref"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "code",
+        "ref",
+        "kind",
+        "title",
+        "body_md",
+        "status",
+        "owner",
+        "period",
+        "due",
+        "baseline",
+        "target",
+        "source",
+        "source_url",
+        "source_rev",
+        "parents",
+        "children",
+        "links",
+        "rollup",
+        "gaps",
+        "created_by",
+        "created_at",
+        "updated_by",
+        "updated_at"
+      ],
+      "schema": "OkrItem"
+    }
+  },
+  {
+    "name": "add",
+    "help": "add a business line, objective, key result or deliverable under its parents (writer)",
+    "project": true,
+    "http": {
+      "method": "POST",
+      "path": "items"
+    },
+    "args": [
+      {
+        "name": "kind",
+        "type": "string",
+        "in": "body",
+        "positional": true,
+        "required": true,
+        "choices": [
+          "business_line",
+          "objective",
+          "key_result",
+          "deliverable"
+        ],
+        "help": "the kind of item"
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "in": "body",
+        "required": true,
+        "help": "what the item is"
+      },
+      {
+        "name": "parents",
+        "flag": "--parent",
+        "type": "string",
+        "in": "body",
+        "repeatable": true,
+        "metavar": "ITEM",
+        "help": "a parent's code or ref; once for each parent"
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "in": "body",
+        "choices": [
+          "draft",
+          "active",
+          "done",
+          "dropped",
+          "archived"
+        ],
+        "help": "active when unsaid"
+      },
+      {
+        "name": "owner",
+        "type": "string",
+        "in": "body",
+        "metavar": "LOGIN",
+        "help": "who answers for it"
+      },
+      {
+        "name": "period",
+        "type": "string",
+        "in": "body",
+        "help": "such as 2026-Q4"
+      },
+      {
+        "name": "due",
+        "type": "string",
+        "in": "body",
+        "metavar": "YYYY-MM-DD",
+        "help": "its due date"
+      },
+      {
+        "name": "baseline",
+        "type": "string",
+        "in": "body",
+        "help": "a key result's baseline"
+      },
+      {
+        "name": "target",
+        "type": "string",
+        "in": "body",
+        "help": "a key result's target"
+      },
+      {
+        "name": "body_md",
+        "flag": "--body",
+        "type": "string",
+        "in": "body",
+        "metavar": "MARKDOWN",
+        "help": "its text, in Markdown"
+      },
+      {
+        "name": "ref",
+        "type": "string",
+        "in": "body",
+        "help": "the id a source outside the hub gave it"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "code",
+        "ref",
+        "kind",
+        "title",
+        "body_md",
+        "status",
+        "owner",
+        "period",
+        "due",
+        "baseline",
+        "target",
+        "source",
+        "source_url",
+        "source_rev",
+        "parents",
+        "children",
+        "links",
+        "rollup",
+        "gaps",
+        "created_by",
+        "created_at",
+        "updated_by",
+        "updated_at"
+      ],
+      "schema": "OkrItem"
+    }
+  },
+  {
+    "name": "set",
+    "help": "change an item's fields or parents (writer); an item an import writes changes there",
+    "project": true,
+    "http": {
+      "method": "PATCH",
+      "path": "items/{item}"
+    },
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "in": "path",
+        "positional": true,
+        "required": true,
+        "metavar": "ITEM",
+        "help": "the item's code (KR-3) or ref"
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "in": "body",
+        "required": false,
+        "help": "what the item is"
+      },
+      {
+        "name": "parents",
+        "flag": "--parent",
+        "type": "string",
+        "in": "body",
+        "repeatable": true,
+        "metavar": "ITEM",
+        "help": "a parent's code or ref; once for each parent, in place of those it has"
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "in": "body",
+        "choices": [
+          "draft",
+          "active",
+          "done",
+          "dropped",
+          "archived"
+        ],
+        "help": "its status"
+      },
+      {
+        "name": "owner",
+        "type": "string",
+        "in": "body",
+        "metavar": "LOGIN",
+        "help": "who answers for it; an empty value clears it"
+      },
+      {
+        "name": "period",
+        "type": "string",
+        "in": "body",
+        "help": "such as 2026-Q4; an empty value clears it"
+      },
+      {
+        "name": "due",
+        "type": "string",
+        "in": "body",
+        "metavar": "YYYY-MM-DD",
+        "help": "its due date; an empty value clears it"
+      },
+      {
+        "name": "baseline",
+        "type": "string",
+        "in": "body",
+        "help": "a key result's baseline; an empty value clears it"
+      },
+      {
+        "name": "target",
+        "type": "string",
+        "in": "body",
+        "help": "a key result's target; an empty value clears it"
+      },
+      {
+        "name": "body_md",
+        "flag": "--body",
+        "type": "string",
+        "in": "body",
+        "metavar": "MARKDOWN",
+        "help": "its text, in Markdown; an empty value clears it"
+      },
+      {
+        "name": "ref",
+        "type": "string",
+        "in": "body",
+        "help": "the id a source outside the hub gave it; an empty value clears it"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "code",
+        "ref",
+        "kind",
+        "title",
+        "body_md",
+        "status",
+        "owner",
+        "period",
+        "due",
+        "baseline",
+        "target",
+        "source",
+        "source_url",
+        "source_rev",
+        "parents",
+        "children",
+        "links",
+        "rollup",
+        "gaps",
+        "created_by",
+        "created_at",
+        "updated_by",
+        "updated_at"
+      ],
+      "schema": "OkrItem"
+    }
+  },
+  {
+    "name": "link",
+    "help": "link a deliverable to a task, use case or plan, or a key result to its goal (writer)",
+    "project": true,
+    "http": {
+      "method": "POST",
+      "path": "items/{item}/links"
+    },
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "in": "path",
+        "positional": true,
+        "required": true,
+        "metavar": "ITEM",
+        "help": "the item's code (KR-3) or ref"
+      },
+      {
+        "name": "kind",
+        "type": "string",
+        "in": "body",
+        "positional": true,
+        "required": true,
+        "choices": [
+          "task",
+          "use_case",
+          "plan",
+          "goal"
+        ],
+        "help": "what it links to"
+      },
+      {
+        "name": "target",
+        "type": "string",
+        "in": "body",
+        "positional": true,
+        "required": true,
+        "help": "T-12, <document>:<code> of a use case, a plan's slug, or G-3"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "made",
+        "item",
+        "link"
+      ],
+      "schema": "OkrLinkMade"
+    }
+  },
+  {
+    "name": "unlink",
+    "help": "take a link off an item (writer)",
+    "project": true,
+    "http": {
+      "method": "DELETE",
+      "path": "items/{item}/links/{link_id}"
+    },
+    "args": [
+      {
+        "name": "item",
+        "type": "string",
+        "in": "path",
+        "positional": true,
+        "required": true,
+        "metavar": "ITEM",
+        "help": "the item's code (KR-3) or ref"
+      },
+      {
+        "name": "link_id",
+        "type": "integer",
+        "in": "path",
+        "positional": true,
+        "required": true,
+        "metavar": "LINK",
+        "help": "the link's id, as show lists it"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "deleted",
+        "item",
+        "link"
+      ],
+      "schema": "OkrUnlinked"
+    }
+  },
+  {
+    "name": "import",
+    "help": "upsert a source's items by ref and add their links, from a JSON bundle (writer)",
+    "project": true,
+    "http": {
+      "method": "POST",
+      "path": "import"
+    },
+    "args": [
+      {
+        "name": "file",
+        "type": "file",
+        "in": "body",
+        "required": true,
+        "help": "the bundle: {source, items, links}, as docs/okr-plugin.md has it"
+      },
+      {
+        "name": "dry_run",
+        "type": "boolean",
+        "in": "body",
+        "help": "write nothing, answer what it would do"
+      },
+      {
+        "name": "prune",
+        "type": "boolean",
+        "in": "body",
+        "help": "archive the source's items the bundle no longer lists"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "source",
+        "dry_run",
+        "prune",
+        "created",
+        "updated",
+        "unchanged",
+        "missing",
+        "links"
+      ],
+      "schema": "OkrImported"
+    }
+  }
+]

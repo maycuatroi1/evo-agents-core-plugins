@@ -1,0 +1,111 @@
+/* What the page OKR adds to the hub's UI kit 1 and common.css: the filters, the collapsible nodes of the tree with
+   their progress, and the lists of links and gaps, each from the kit's own tokens so the theme follows. */
+.okr-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.okr-filters label {
+  display: flex;
+  min-width: 10rem;
+  flex: 1 1 10rem;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.okr-tree,
+.okr-tree ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.okr-tree ul {
+  margin-left: var(--space-2);
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--border);
+}
+@media (min-width: 768px) {
+  .okr-tree ul {
+    margin-left: var(--space-4);
+    padding-left: var(--space-3);
+  }
+}
+.okr-node > details > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-1);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  list-style: none;
+}
+.okr-node > details > summary::-webkit-details-marker {
+  display: none;
+}
+.okr-node > details > summary:hover {
+  background: var(--surface-hover);
+}
+.okr-node > details > summary:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+@media (min-width: 768px) {
+  .okr-node > details > summary {
+    grid-template-columns: minmax(0, 1fr) 12rem;
+    align-items: center;
+  }
+}
+.okr-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+}
+.okr-head::before {
+  content: "\25B8";
+  color: var(--muted-foreground);
+  transition: transform 0.15s;
+}
+details[open] > summary .okr-head::before {
+  transform: rotate(90deg);
+}
+.okr-leaf > details > summary .okr-head::before {
+  visibility: hidden;
+}
+.okr-title {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.okr-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.okr-progress .page-meter {
+  width: 100%;
+}
+.okr-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+.okr-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 0 var(--space-1) var(--space-2) var(--space-3);
+}
+@media (min-width: 768px) {
+  .okr-body {
+    padding-left: var(--space-6);
+  }
+}
+.okr-links > li {
+  padding: var(--space-1) 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .okr-head::before {
+    transition: none;
+  }
+}
