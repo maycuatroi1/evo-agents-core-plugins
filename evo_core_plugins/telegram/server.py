@@ -90,13 +90,14 @@ from pydantic import BaseModel, Field
 from evo_agents.hub.server import core_plugin_api as hub
 
 from . import model as telegram
+from .bridge_model import GROUP_INBOUND_UPDATES, GROUP_TYPES
 
 log = logging.getLogger(__name__)
 
 KIND = "telegram"  # notification_channels.kind, and the audit rows' "via=telegram"
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 WEBHOOK_PATH = "/v1/telegram/webhook"
-ALLOWED_UPDATES = ["message", "callback_query"]
+ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]  # the last: the bot left a group
 MAX_UPDATE_BYTES = 1024 * 1024
 CALL_TIMEOUT_SECONDS = 10.0
 UPLOAD_TIMEOUT_SECONDS = 25.0  # a call that uploads files, within the hub's 30 seconds for a delivery
@@ -199,11 +200,14 @@ def settings() -> Settings:
 class BotApiError(Exception):
     """Telegram refused a call, or could not be reached (``code`` None). Never holds the token."""
 
-    def __init__(self, code: int | None, description: str, retry_after: float | None = None):
+    def __init__(
+        self, code: int | None, description: str, retry_after: float | None = None, migrate_to: int | None = None
+    ):
         super().__init__(f"Telegram answered {code}: {description}" if code else description)
         self.code = code
         self.description = description
         self.retry_after = retry_after
+        self.migrate_to = migrate_to  # the supergroup a group became, when Telegram says so
 
 
 class BotApi:
@@ -211,6 +215,7 @@ class BotApi:
 
     def __init__(self, token: str, api_url: str):
         self._base = f"{api_url.rstrip('/')}/bot{token}/"
+        self._files = f"{api_url.rstrip('/')}/file/bot{token}/"
 
     @classmethod
     def from_settings(cls, found: Settings) -> BotApi | None:
@@ -233,6 +238,28 @@ class BotApi:
         parts = [(file.field, (file.name, file.content, file.media_type)) for file in files]
         return await self._post(method, UPLOAD_TIMEOUT_SECONDS, data=fields, files=parts)
 
+    async def download(self, file_id: str, limit: int) -> bytes:
+        """The bytes of Telegram's file ``file_id`` (getFile, then its path), at most ``limit`` of them; BotApiError
+        when they do not come whole. Its URL holds the token: never logged."""
+        found = await self.call("getFile", file_id=file_id)
+        path = found.get("file_path") if isinstance(found, dict) else None
+        if not isinstance(path, str) or not path or ".." in path:
+            raise BotApiError(None, "Telegram gave no path of the file")
+        try:
+            async with httpx.AsyncClient(timeout=UPLOAD_TIMEOUT_SECONDS, transport=TRANSPORT) as client:
+                async with client.stream("GET", self._files + path) as response:
+                    if response.status_code != 200:
+                        raise BotApiError(response.status_code, "Telegram did not give the file")
+                    chunks, size = [], 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > limit:
+                            raise BotApiError(413, "the file is larger than the bridge takes")
+                        chunks.append(chunk)
+        except httpx.HTTPError as exc:  # its text can hold the URL, and so the token
+            raise BotApiError(None, f"Telegram could not be reached ({type(exc).__name__})") from None
+        return b"".join(chunks)
+
     async def _post(self, method: str, timeout: float, **body) -> Any:
         try:
             async with httpx.AsyncClient(timeout=timeout, transport=TRANSPORT) as client:
@@ -248,9 +275,15 @@ class BotApi:
         found = data if isinstance(data, dict) else {}
         parameters = found.get("parameters") if isinstance(found.get("parameters"), dict) else {}
         retry = parameters.get("retry_after")
+        moved = parameters.get("migrate_to_chat_id")
         description = " ".join(str(found.get("description") or "no description").split())[:300]
         code = found.get("error_code") if isinstance(found.get("error_code"), int) else response.status_code
-        raise BotApiError(code, description, float(retry) if isinstance(retry, (int, float)) else None)
+        raise BotApiError(
+            code,
+            description,
+            float(retry) if isinstance(retry, (int, float)) else None,
+            moved if isinstance(moved, int) and not isinstance(moved, bool) else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -672,14 +705,15 @@ class InboundLimit:
         self.updates, self.seconds = updates, seconds
         self._seen: dict[int, deque[float]] = {}
 
-    def allow(self, chat_id: int, now: float | None = None) -> bool:
+    def allow(self, chat_id: int, now: float | None = None, *, updates: int | None = None) -> bool:
+        """Whether an update of ``chat_id`` is taken now: at most ``updates`` (this limit's own by default)."""
         now = time.monotonic() if now is None else now
         if len(self._seen) > self.MAX_CHATS:
             self._seen = {key: seen for key, seen in self._seen.items() if seen and now - seen[-1] < self.seconds}
         seen = self._seen.setdefault(chat_id, deque())
         while seen and now - seen[0] >= self.seconds:
             seen.popleft()
-        if len(seen) >= self.updates:
+        if len(seen) >= max(self.updates, updates or 0):
             return False
         seen.append(now)
         return True
@@ -758,6 +792,11 @@ class Updates:
 
     async def handle(self, update: dict) -> str:
         callback, message = update.get("callback_query"), update.get("message")
+        member_change = update.get("my_chat_member")
+        if isinstance(member_change, dict):
+            from . import bridge  # its module imports this one
+
+            return await bridge.member_changed(self, member_change)
         if isinstance(callback, dict):
             chat_id = _object(_object(callback.get("message")).get("chat")).get("id")
         elif isinstance(message, dict):
@@ -766,11 +805,16 @@ class Updates:
             return "ignored"
         if not isinstance(chat_id, int):
             return "ignored"
-        if not inbound(self.app).allow(chat_id):
+        group = not isinstance(callback, dict) and _object(message.get("chat")).get("type") in GROUP_TYPES
+        if not inbound(self.app).allow(chat_id, updates=GROUP_INBOUND_UPDATES if group else None):
             log.info("telegram update dropped: too many from one chat")
             return "dropped"
         if isinstance(callback, dict):
             return await self.button(callback, chat_id)
+        if group:
+            from . import bridge  # its module imports this one
+
+            return await bridge.Group(self, message, chat_id).handle()
         return await self.text(message, chat_id)
 
     async def text(self, message: dict, chat_id: int) -> str:

@@ -5,7 +5,7 @@ and built on its API of core plugins alone (`evo_agents.hub.server.core_plugin_a
 
 | Plugin | Package | What it does |
 |---|---|---|
-| `telegram` | `evo_core_plugins.telegram` | The hub's Telegram channel: a member links a private chat from the web, gets decisions, proposals and notices there, with the files of a run and of a question as photos or documents, and answers them with buttons or replies |
+| `telegram` | `evo_core_plugins.telegram` | The hub's Telegram channel: a member links a private chat from the web, gets decisions, proposals and notices there, with the files of a run and of a question as photos or documents, and answers them with buttons or replies; and, in a project that enables it, the bridge of a Telegram group to a group chat of the hub, both ways ([docs/telegram-plugin.md](docs/telegram-plugin.md)) |
 | `chats` | `evo_core_plugins.chats` | The messages of the hub's group chats in each project's knowledge graph, for who is in each chat |
 | `pm` | `evo_core_plugins.pm` | The daily report of a project's delivery, read from the hub's tasks, srs, plans, runs and decisions, sent as a digest with escalations of old blockers ([docs/pm-plugin.md](docs/pm-plugin.md)) |
 | `crm` | `evo_core_plugins.crm` | The people who found a project themselves, as contacts with a stage (lead, invited, activated, retained) pushed to Signal ([docs/crm-plugin.md](docs/crm-plugin.md)) |
@@ -21,6 +21,19 @@ pm, crm and marketing carry their own tables (`tables.py`, the `schema.metadata`
 of Alembic migrations (`migrations/`, version table `alembic_version_<id>`), whose first revision adopts the tables the
 hub's migrations made before, rows and all. Their pages are files under `ui/pages`, which the hub frames, and their
 commands a `cli.json` the CLI reads without importing the plugin, with the words without `--json` from `cli_text.py`.
+
+### The Telegram group bridge
+
+Before you bridge a group, read [docs/telegram-plugin.md](docs/telegram-plugin.md). In short:
+
+- **Turn privacy mode off** with @BotFather (*Bot Settings*, then *Group Privacy*, then *Turn off*), then add the bot
+  to the group again. With privacy mode on, the members' messages never reach the hub.
+- **Anyone in the group reads what goes out**, at the level the chat's label and the project's `telegram` channel sink
+  allow, whether or not they are a member of the hub.
+- **The group's admins manage its members** in Telegram. The hub does not know who is in the group.
+- The project enables `telegram` with `chats:read` and `chats:write` and declares a sink of kind `channel` named
+  `telegram` in `knowledge.yaml`. A hub admin runs `evo-agents hub admin telegram --set-webhook` again after the
+  upgrade, so the bot learns when it is taken out of a group.
 
 ## How the hub installs it
 
@@ -59,9 +72,15 @@ versions.
 | 2.1.0 | 1.4 | `3e42aad7d4c626f43d6cf86a529e188b9fb1e76f` (pull request #270) |
 | 2.1.1 | 1.4 | the same |
 | 2.1.2 | 1.4 | the same |
+| 2.2.0 | 1.5 | `49359c9ba0e5aca315f62520f03aeb127b05ac93` (pull request #293, plan chat-bridges) |
 
 ### Releases
 
+- **2.2.0**: `telegram` bridges a Telegram group with a chat of the hub through the chat bridge of API 1.5:
+  `/link <code>` in the group, linked members' messages come in as theirs (`@<bot>` mentions an agent), the chat's
+  messages go out when their label is cleared for the project's `channel` sink, with photos, documents, run progress
+  as one edited message and an agent's ✅ and ❌ as reactions. The 1:1 channel is unchanged. Every plugin asks for API
+  1.5; hub admins run `evo-agents hub admin telegram --set-webhook` again for `my_chat_member`. No migration.
 - **2.1.2**: `editorial` hands the writer a task on a gate's answer only when it came through the hub (`via` hub,
   the default); an answer from inside a session (`claude-code`, `codex`) is kept and hands none, as that session goes
   on itself. API 1.4, no migration.
@@ -122,7 +141,7 @@ checks out main instead of the lock, and `make lock` says whether `.evo-agents` 
 `plugin_tests/test_telegram.py`, `test_telegram_model.py`, `fake_telegram.py` and `test_chats_kg_source.py` are the
 tests telegram and chats had in evo-agents; `test_pm_*.py`, `test_hub_pm_cli.py`, `test_crm_*.py`, `test_marketing_*.py`
 and `test_growth_*.py` the tests of pm, crm and marketing there (`tests/hub`). `test_telegram_files.py` sends the files of notifications through the channel
-alone, and `test_telegram_outputs.py` through a hub that gives them; it skips with evo-agents at a commit whose hub
+alone, `test_telegram_bridge.py` drives the group bridge through a hub and the fake Bot API, and `test_telegram_outputs.py` through a hub that gives them; it skips with evo-agents at a commit whose hub
 gives channels no files. They use evo-agents' test helpers from the checkout at the lock: `tests.hub.pg`,
 `tests.hub.live`, the fixtures of `tests/hub/conftest.py` and functions of its test modules (`conftest.py` puts the
 checkout on `sys.path` and loads them). **These helpers are not part of the API of core plugins.** No wheel holds them
