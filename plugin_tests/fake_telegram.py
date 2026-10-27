@@ -7,6 +7,11 @@ retry_after or the 403 of a blocked bot. A call that uploads files (sendPhoto, s
 multipart/form-data: its payload holds its fields, and ``files`` what it uploaded under each field, by name, type and
 bytes. Nothing here reaches Telegram.
 
+For the bridge of a group: ``files`` holds what getFile and the download of a file (GET /file/bot<token>/<path>)
+give, by file_id; ``admins`` the users getChatMember says are admins of a group; ``group_chat``, ``photo_update`` and
+``bot_left`` build a group's updates, and ``fail_next`` with ``migrate_to`` answers the 400 of a group that became a
+supergroup.
+
 The bot token and the webhook secret are built from pieces, so no scanner reads them as real ones.
 """
 
@@ -54,7 +59,17 @@ class FakeTelegram:
     webhook: dict = field(default_factory=lambda: {"url": "", "pending_update_count": 0})
     message_id: int = 1000
     token: str = TOKEN
+    files: dict = field(default_factory=dict)  # file_id: bytes, what a group's message carries
+    admins: set = field(default_factory=set)  # (chat id, user id) of a group's admins
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def download(self, path: str) -> tuple[int, bytes]:
+        """GET /file/bot<token>/<path>: the bytes getFile pointed at."""
+        prefix = f"/file/bot{self.token}/files/"
+        with self.lock:
+            self.calls.append(("download", {"path": path}))
+            found = self.files.get(path[len(prefix) :]) if path.startswith(prefix) else None
+        return (200, found) if found is not None else (404, b"Not Found")
 
     def answer(self, path: str, payload: dict) -> tuple[int, dict]:
         prefix = f"/bot{self.token}/"
@@ -79,8 +94,18 @@ class FakeTelegram:
                     sent.append({"message_id": self.message_id, "chat": {"id": payload.get("chat_id")}})
                 payload["message_ids"] = [message["message_id"] for message in sent]
                 return 200, ok(sent)
-            if method in ("answerCallbackQuery", "editMessageText"):
+            if method in ("answerCallbackQuery", "editMessageText", "setMessageReaction"):
                 return 200, ok(True)
+            if method == "getFile":
+                found = self.files.get(payload.get("file_id"))
+                if found is None:
+                    return 400, {"ok": False, "error_code": 400, "description": "Bad Request: invalid file_id"}
+                file_id = payload["file_id"]
+                return 200, ok({"file_id": file_id, "file_size": len(found), "file_path": f"files/{file_id}"})
+            if method == "getChatMember":
+                admin = (payload.get("chat_id"), payload.get("user_id")) in self.admins
+                user = {"id": payload.get("user_id"), "is_bot": False, "first_name": "Someone"}
+                return 200, ok({"status": "administrator" if admin else "member", "user": user})
             if method == "getWebhookInfo":
                 return 200, ok(dict(self.webhook))
             if method == "setWebhook":
@@ -92,6 +117,9 @@ class FakeTelegram:
         import httpx
 
         def handle(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path.startswith("/file/"):
+                status, content = self.download(request.url.path)
+                return httpx.Response(status, content=content)
             payload = payload_of(request.headers.get("content-type"), request.content)
             status, body = self.answer(request.url.path, payload)
             return httpx.Response(status, json=body)
@@ -99,11 +127,18 @@ class FakeTelegram:
         return httpx.MockTransport(handle)
 
     def fail_next(
-        self, status: int, description: str, retry_after: int | None = None, method: str = "sendMessage"
+        self,
+        status: int,
+        description: str,
+        retry_after: int | None = None,
+        method: str = "sendMessage",
+        migrate_to: int | None = None,
     ) -> None:
         body = {"ok": False, "error_code": status, "description": description}
         if retry_after is not None:
             body["parameters"] = {"retry_after": retry_after}
+        if migrate_to is not None:
+            body["parameters"] = {"migrate_to_chat_id": migrate_to}
         self.failures.append((method, status, body))
 
     def sent(self, method: str = "sendMessage") -> list[dict]:
@@ -176,5 +211,37 @@ def button_update(update_id: int, chat: dict, sender: dict, data: str, message: 
             "chat_instance": "1",
             "data": data,
             "message": shown,
+        },
+    }
+
+
+def group_chat(chat_id: int, kind: str = "supergroup") -> dict:
+    """A group the bot is a member of: a group, or a supergroup, whose id starts -100."""
+    return {"id": chat_id, "type": kind, "title": "Release team"}
+
+
+def photo_update(update_id: int, chat: dict, sender: dict, file_id: str, size: int, caption: str = "") -> dict:
+    """A photo sent to ``chat``, in the sizes Telegram gives, the largest last."""
+    sizes = [
+        {"file_id": f"{file_id}-small", "file_unique_id": "s", "width": 90, "height": 90, "file_size": 1000},
+        {"file_id": file_id, "file_unique_id": "l", "width": 1280, "height": 960, "file_size": size},
+    ]
+    message = {"message_id": update_id + 50_000, "date": 1_760_000_000, "chat": chat, "from": sender, "photo": sizes}
+    if caption:
+        message["caption"] = caption
+    return {"update_id": update_id, "message": message}
+
+
+def bot_left(update_id: int, chat: dict, status: str = "kicked") -> dict:
+    """The bot's membership of ``chat`` changed to ``status`` (my_chat_member)."""
+    bot = {"id": 123456789, "is_bot": True, "first_name": "evo hub", "username": BOT}
+    return {
+        "update_id": update_id,
+        "my_chat_member": {
+            "chat": chat,
+            "from": {"id": 9, "is_bot": False, "first_name": "Admin"},
+            "date": 1_760_000_000,
+            "old_chat_member": {"user": bot, "status": "member"},
+            "new_chat_member": {"user": bot, "status": status},
         },
     }
