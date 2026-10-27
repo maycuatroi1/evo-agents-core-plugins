@@ -6,7 +6,8 @@ A chat admin's code links a group with ``/link``; the bot removed from the group
 takes the bridge off; a group that becomes a supergroup keeps it. A linked member's message comes in as theirs with
 its mentions made the hub's and its photo; someone not linked is told once and stays out. A hub message goes out as
 HTML within 4096 characters, its table a ``<pre>``, cut with a link to the hub; a run's progress is one message,
-edited; the agent's ✅ becomes the bot's reaction; and a group gets at most 20 messages a minute."""
+edited; its files go as photos and documents, one too large as a link to the hub; the agent's ✅ becomes the
+bot's reaction, a person's stays on the hub; and a group gets at most 20 messages a minute."""
 
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from sqlalchemy import func, insert, select, update
 from evo_agents.hub import chat_bridge_events, plugin_events, tables
 from evo_agents.hub.server.app import create_app
 from evo_core_plugins.telegram import bridge, bridge_model, server
+from evo_core_plugins.telegram import model as telegram
 from plugin_tests.fake_telegram import BOT, bot_left, group_chat, photo_update, private_chat, text_update
 from plugin_tests.test_telegram import (
     OTHER_CHAT,
@@ -302,6 +304,94 @@ def test_the_channel_sink_keeps_a_message_above_its_clearance_in_the_hub(bridged
     assert [payload["text"] for payload in to_group(fake)] == [bridge.LINKED]
 
 
+def attached(client, headers, chat_id: int, body: str, *files: tuple[str, str, bytes]) -> dict:
+    """A message of ``body`` with ``files`` (name, media type, bytes) attached, as a member posts it from the hub."""
+    ids = []
+    for name, media_type, content in files:
+        target = f"/v1/chats/{chat_id}/attachments"
+        up = client.post(
+            target, params={"name": name}, content=content, headers={**headers, "Content-Type": media_type}
+        )
+        assert up.status_code == 201, up.text
+        ids.append(up.json()["id"])
+    posted = client.post(f"/v1/chats/{chat_id}/messages", json={"body": body, "attachment_ids": ids}, headers=headers)
+    assert posted.status_code == 201, posted.text
+    return posted.json()
+
+
+def uploads(fake, method: str, field: str) -> list[tuple[str, bytes, int | None, str | None]]:
+    """What went to the group with ``method``: the file's name and bytes, the message it replies to, its caption."""
+    return [
+        (
+            payload["files"][field]["name"],
+            payload["files"][field]["content"],
+            (payload.get("reply_parameters") or {}).get("message_id"),
+            payload.get("caption"),
+        )
+        for payload in to_group(fake, method=method)
+    ]
+
+
+def test_the_files_of_a_hub_message_go_out_as_a_photo_and_a_document_and_one_too_large_as_a_link(bridged, monkeypatch):
+    client, fake, chat, headers = bridged.client, bridged.fake, bridged.chat, bridged.headers
+    monkeypatch.setattr(telegram, "MAX_DOCUMENT_BYTES", 200)  # what a bot uploads, small enough for a test's file
+    notes = b"step one, then step two\n" * 4
+    large = b"z" * 300
+    files = [
+        ("screen.png", "image/png", PNG),
+        ("notes.txt", "text/plain", notes),
+        ("all.zip", "application/zip", large),
+    ]
+    message = attached(client, headers["owner"], chat["id"], "the release, in files", *files)
+    deliver_events(client)
+    (text,) = [payload for payload in to_group(fake) if payload["text"] != bridge.LINKED]
+    assert text["text"].startswith(
+        f"<b>{OWNER}</b>\nthe release, in files\nToo large for Telegram, on the hub: all.zip"
+    )
+    assert text["text"].endswith(f'/chats/{chat["id"]}?message={message["id"]}">Open it on the hub</a>'), text
+    head = text["message_id"]
+    assert uploads(fake, "sendPhoto", "photo") == [("screen.png", PNG, head, None)]
+    assert uploads(fake, "sendDocument", "document") == [("notes.txt", notes, head, None)]
+    # Once: the event delivered again sends nothing more.
+    deliver_events(client)
+    assert len(fake.media()) == 2
+    # A message that is files alone goes as its first file, its author the caption, the rest replies to it.
+    alone = attached(
+        client, headers["owner"], chat["id"], "", ("shot.png", "image/png", PNG), ("more.txt", "text/plain", notes)
+    )
+    deliver_events(client)
+    assert [payload["text"] for payload in to_group(fake)][-1] == text["text"], "no text for files alone"
+    (photo, caption) = [(payload["message_id"], payload) for payload in to_group(fake, method="sendPhoto")][-1]
+    assert caption["caption"] == f"<b>{OWNER}</b>" and caption["parse_mode"] == "HTML"
+    assert uploads(fake, "sendDocument", "document")[-1] == ("more.txt", notes, photo, None)
+    shown = page(client, headers["owner"], chat["id"])["messages"]
+    (mine,) = [item for item in shown if item["id"] == alone["id"]]
+    assert [bridged_to["kind"] for bridged_to in mine["bridged_to"]] == ["telegram"]
+
+
+def test_a_photo_telegram_refuses_goes_as_a_document_and_the_files_of_one_try_stay_within_its_bytes(
+    bridged, monkeypatch
+):
+    client, db, fake, chat, headers = bridged.client, bridged.db, bridged.fake, bridged.chat, bridged.headers
+    fake.fail_next(400, "Bad Request: PHOTO_INVALID_DIMENSIONS", method="sendPhoto")
+    attached(client, headers["owner"], chat["id"], "a wide one", ("wide.png", "image/png", PNG))
+    deliver_events(client)
+    assert [upload[0] for upload in uploads(fake, "sendPhoto", "photo")] == ["wide.png"]  # refused
+    assert [upload[:2] for upload in uploads(fake, "sendDocument", "document")] == [("wide.png", PNG)]
+    # A try uploads one file and what fits in MAX_MEDIA_BYTES after it; the hub sends the event again for the rest.
+    monkeypatch.setattr(telegram, "MAX_MEDIA_BYTES", len(PNG) + 1)
+    two = [("first.png", "image/png", PNG), ("second.png", "image/png", PNG)]
+    attached(client, headers["owner"], chat["id"], "two of them", *two)
+    deliver_events(client)
+    assert [upload[0] for upload in uploads(fake, "sendPhoto", "photo")[1:]] == ["first.png"]
+    d = tables.plugin_deliveries
+    sql(db, update(d).values(next_at=func.now()).where(d.c.state == "pending"))
+    deliver_events(client)
+    assert [upload[0] for upload in uploads(fake, "sendPhoto", "photo")[1:]] == ["first.png", "second.png"]
+    heads = [payload["message_id"] for payload in to_group(fake) if payload["text"].endswith("two of them")]
+    assert len(heads) == 1 and {upload[2] for upload in uploads(fake, "sendPhoto", "photo")[1:]} == set(heads)
+
+
 def test_a_runs_progress_is_one_message_edited_and_the_agents_check_is_a_reaction(bridged):
     client, db, fake, chat = bridged.client, bridged.db, bridged.fake, bridged.chat
     _, first = in_group(client, f"@{BOT} run the checks")
@@ -321,12 +411,21 @@ def test_a_runs_progress_is_one_message_edited_and_the_agents_check_is_a_reactio
     moved("done")
 
     async def checked(conn):
-        return await chat_bridge_events.reaction(conn, chat["id"], started, "✅", added=True, count=1)
+        return await chat_bridge_events.reaction(
+            conn, chat["id"], started, "✅", added=True, count=1, by_kind="agent", by=PROJECT
+        )
 
     async def eyes(conn):
-        return await chat_bridge_events.reaction(conn, chat["id"], started, "\U0001f440", added=True, count=1)
+        return await chat_bridge_events.reaction(
+            conn, chat["id"], started, "\U0001f440", added=True, count=1, by_kind="agent", by=PROJECT
+        )
 
-    assert on_hub(client, checked) == 1 and on_hub(client, eyes) == 1
+    async def a_persons(conn):
+        return await chat_bridge_events.reaction(
+            conn, chat["id"], started, "❌", added=True, count=1, by_kind="person", by=OWNER
+        )
+
+    assert on_hub(client, checked) == 1 and on_hub(client, eyes) == 1 and on_hub(client, a_persons) == 1
     deliver_events(client)
     progress = [payload for payload in to_group(fake) if payload["text"].startswith("Run #41")]
     assert len(progress) == 1 and progress[0]["reply_parameters"]["message_id"] == first, progress
@@ -336,7 +435,7 @@ def test_a_runs_progress_is_one_message_edited_and_the_agents_check_is_a_reactio
     assert {payload["message_id"] for payload in to_group(fake, method="editMessageText")} == {
         progress[0]["message_id"]
     }
-    (reacted,) = to_group(fake, method="setMessageReaction")  # the 👀 does not go out
+    (reacted,) = to_group(fake, method="setMessageReaction")  # neither the 👀 nor a person's ❌ goes out
     assert reacted["message_id"] == first and reacted["reaction"] == [{"type": "emoji", "emoji": "\U0001f44d"}]
 
 
@@ -388,4 +487,14 @@ def test_inbound_mentions_and_outbound_html_as_the_model_makes_them():
     )
     assert bridge_model.reaction("✅") == "\U0001f44d" and bridge_model.reaction("❌") == "\U0001f44e"
     assert bridge_model.reaction("\U0001f440") is None
+    mib = 1024 * 1024
+    assert bridge_model.file_method("image/png", 10 * mib) == "sendPhoto"
+    assert bridge_model.file_method("image/png", 10 * mib + 1) == "sendDocument"
+    assert bridge_model.file_method("image/gif", 1) == "sendDocument"
+    assert bridge_model.file_method("application/pdf", 50 * mib) == "sendDocument"
+    assert bridge_model.file_method("application/pdf", 50 * mib + 1) is None
+    assert bridge_model.caption("agent", PROJECT, "https://hub.test/c", ["big.mov"]) == (
+        f"<b>{PROJECT}</b> (agent)\nToo large for Telegram, on the hub: big.mov"
+        '\n<a href="https://hub.test/c">Open it on the hub</a>'
+    )
     assert live  # the module of evo-agents' test helpers this module reads its hub from

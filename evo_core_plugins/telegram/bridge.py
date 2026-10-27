@@ -18,14 +18,18 @@ gets no answer: with privacy mode off the bot reads every message there.
 
 Out to the group (the event): a new message of the chat as ``hub.bridge_message`` lets it out (None: nothing goes),
 once, as HTML within 4096 characters, cut with a link to the hub when long; a run's progress as one message that is
-edited; the agent's ✅ and ❌ on a message the bridge carried as the bot's reaction. The hub lets out no file of a chat
-(``hub.bridge_message``), so a message that is a file alone goes as a link to it on the hub. At most 20 messages a
-minute go to one group (``bridge_model.Pace``): a message that would wait longer than MAX_WAIT_SECONDS fails its try,
-and the hub sends the event again later. A 429 fails it the same way.
+edited; the agent's ✅ and ❌ on a message the bridge carried as the bot's reaction (a person's stays on the hub).
+The files attached to a message (``BridgeMessage.files``, their bytes from ``hub.bridge_file`` under the same channel
+check) go with it: a photo within 10 MB with sendPhoto, any file within 50 MB with sendDocument, as replies to the
+message, or the first of them with its author as the caption when the message is files alone; a larger file stays on
+the hub, named in the message with a link to it there. One try of the event uploads at most MAX_MEDIA_BYTES after its
+first file, so that it ends within the hub's 30 seconds; the rest go on the next try. At most 20 messages a minute go
+to one group (``bridge_model.Pace``): a message that would wait longer than MAX_WAIT_SECONDS fails its try, and the
+hub sends the event again later. A 429 fails it the same way.
 
 The bridge keeps in its state (``hub.bridge_set_state``) the group's message of each of the last hub messages it
-carried (``ids``), the progress message of each of the last runs (``runs``), the chat's agent once it spoke
-(``agent``) and the senders told how to link (``told``).
+carried (``ids``), the files of a message still to go (``files``), the progress message of each of the last runs
+(``runs``), the chat's agent once it spoke (``agent``) and the senders told how to link (``told``).
 """
 
 from __future__ import annotations
@@ -305,15 +309,25 @@ async def _paced(chat_id: int) -> None:
         await server.pause(wait)
 
 
-async def _send(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, method: str, **params) -> Any:
-    """``method`` to the bridge's group, paced; None when the group is gone (the bridge unlinked). A group that became
-    a supergroup gets it there, the bridge moved."""
+async def _send(
+    context: hub.Context,
+    bot: server.BotApi,
+    bridge: hub.Bridge,
+    method: str,
+    files: list[server.Upload] | None = None,
+    **params,
+) -> Any:
+    """``method`` to the bridge's group, paced, ``files`` uploaded with it; None when the group is gone (the bridge
+    unlinked). A group that became a supergroup gets it there, the bridge moved."""
     chat_id = int(bridge.external_id)
     for _ in range(2):
         if method != "setMessageReaction":
             await _paced(chat_id)
         try:
-            sent = await bot.call(method, chat_id=chat_id, **params)
+            if files:
+                sent = await bot.upload(method, files, chat_id=chat_id, **params)
+            else:
+                sent = await bot.call(method, chat_id=chat_id, **params)
         except server.BotApiError as exc:
             if exc.migrate_to is not None:
                 async with hub.transaction(context) as conn:
@@ -338,17 +352,11 @@ def _reply(message_id: int | None) -> dict | None:
     return {"message_id": message_id, "allow_sending_without_reply": True} if message_id else None
 
 
-async def _message(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, payload: dict) -> None:
-    message_id = payload["message_id"]
-    if str(message_id) in (bridge.state.get("ids") or {}):
-        return  # it went already, or came from this group
-    async with hub.transaction(context) as conn:
-        read = await hub.bridge_message(conn, plugin(), bridge.id, message_id)
-    if read is None:
-        return
-    url = hub.web_url(context.config, read.link)
-    text = model.outbound(read.author_kind, read.author, read.body, url)
-    reply_to = int(read.reply_to) if read.reply_to and read.reply_to.lstrip("-").isdigit() else None
+class _Gone(Exception):  # noqa: N818 (the group is gone and the bridge unlinked: nothing more goes)
+    pass
+
+
+async def _text(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, text: str, reply_to: int | None):
     common = {"reply_parameters": _reply(reply_to), "link_preview_options": {"is_disabled": True}}
     try:
         sent = await _send(context, bot, bridge, "sendMessage", text=text, parse_mode=telegram.PARSE_MODE, **common)
@@ -357,18 +365,109 @@ async def _message(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge,
             raise
         log.warning("telegram group refused the HTML: sent as text", extra={"code": exc.code})
         sent = await _send(context, bot, bridge, "sendMessage", text=model.plain(text), **common)
-    group_id = server._sent_id(sent)
-    if group_id is None:
-        return
+    if sent is None:
+        raise _Gone
+    return server._sent_id(sent)
+
+
+async def _upload(
+    context: hub.Context,
+    bot: server.BotApi,
+    bridge: hub.Bridge,
+    message_id: int,
+    found: hub.BridgeFile,
+    caption: str | None,
+    reply_to: int | None,
+) -> int | None:
+    """The file ``found`` of the hub's ``message_id`` to the group; the id of the message it became, or None when the
+    hub no longer lets it out or Telegram refused it (a photo refused goes again as a document)."""
+    content = await hub.bridge_file(context, plugin(), bridge.id, message_id, found.id)
+    method = model.file_method(found.media_type, len(content)) if content else None
+    if content is None or method is None:
+        return None
+    methods = [method, "sendDocument"] if method == "sendPhoto" else [method]
+    extra = {"caption": caption, "parse_mode": telegram.PARSE_MODE} if caption else {}
+    for each in methods:
+        field = "photo" if each == "sendPhoto" else "document"
+        upload = server.Upload(field, telegram.upload_name(found.name), content, found.media_type)
+        try:
+            sent = await _send(context, bot, bridge, each, files=[upload], reply_parameters=_reply(reply_to), **extra)
+        except server.BotApiError as exc:
+            if exc.code != 400:
+                raise
+            log.warning("telegram group refused a file", extra={"code": exc.code, "method": each})
+            continue
+        if sent is None:
+            raise _Gone
+        return server._sent_id(sent)
+    return None
+
+
+async def _message(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, payload: dict) -> None:
+    message_id = payload["message_id"]
+    head = (bridge.state.get("ids") or {}).get(str(message_id))
+    pending = (bridge.state.get("files") or {}).get(str(message_id))
+    if head is not None and not pending:
+        return  # it went already, or came from this group
     async with hub.transaction(context) as conn:
-        await hub.bridge_sent(conn, plugin(), bridge.id, message_id, group_id)
-        fresh = await hub.bridge_read(conn, plugin(), bridge.id)
-        if fresh is None:
+        read = await hub.bridge_message(conn, plugin(), bridge.id, message_id)
+    if read is None:
+        return
+    try:
+        await _carry(context, bot, bridge, read, message_id, head, pending)
+    except _Gone:
+        return
+
+
+async def _carry(
+    context: hub.Context,
+    bot: server.BotApi,
+    bridge: hub.Bridge,
+    read: hub.BridgeMessage,
+    message_id: int,
+    head: int | None,
+    pending: list | None,
+) -> None:
+    """The message ``read`` and its files to the group, or the files still to go of one that went (``head``)."""
+    url = hub.web_url(context.config, read.link)
+    going = [found for found in read.files if model.file_method(found.media_type, found.size)]
+    left_out = [found.name for found in read.files if not model.file_method(found.media_type, found.size)]
+    uploaded = 0
+    if head is None:
+        reply_to = int(read.reply_to) if read.reply_to and read.reply_to.lstrip("-").isdigit() else None
+        if going and not read.body.strip():
+            first, going = going[0], going[1:]
+            caption = model.caption(read.author_kind, read.author, url, left_out)
+            head = await _upload(context, bot, bridge, message_id, first, caption, reply_to)
+            uploaded = first.size
+        if head is None:
+            text = model.outbound(read.author_kind, read.author, read.body, url, left_out)
+            head = await _text(context, bot, bridge, text, reply_to)
+        if head is None:
             return
-        state = model.remembered(fresh.state, "ids", {message_id: group_id}, model.KEEP_IDS)
-        if read.author_kind == "agent" and read.author:
-            state["agent"] = read.author
-        await _keep(conn, bridge, state)
+        async with hub.transaction(context) as conn:
+            await hub.bridge_sent(conn, plugin(), bridge.id, message_id, head)
+            fresh = await hub.bridge_read(conn, plugin(), bridge.id)
+            if fresh is None:
+                return
+            state = model.remembered(fresh.state, "ids", {message_id: head}, model.KEEP_IDS)
+            state = model.pending_files(state, message_id, [found.id for found in going])
+            if read.author_kind == "agent" and read.author:
+                state["agent"] = read.author
+            await _keep(conn, bridge, state)
+    else:
+        going = [found for found in going if found.id in pending]
+    for index, found in enumerate(going):
+        if uploaded and uploaded + found.size > telegram.MAX_MEDIA_BYTES:
+            raise Later("the files of the message go on the next try, within the hub's time for one")
+        await _upload(context, bot, bridge, message_id, found, None, head)
+        uploaded += found.size
+        async with hub.transaction(context) as conn:
+            fresh = await hub.bridge_read(conn, plugin(), bridge.id)
+            if fresh is None:
+                return
+            rest = [later.id for later in going[index + 1 :]]
+            await _keep(conn, bridge, model.pending_files(fresh.state, message_id, rest))
 
 
 async def _progress(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, payload: dict) -> None:
@@ -402,11 +501,13 @@ async def _progress(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge
 
 
 async def _reaction(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, payload: dict) -> None:
+    if payload.get("by_kind") != "agent":
+        return  # a person's reaction stays on the hub
     emoji = model.reaction(str(payload.get("emoji") or ""))
     target = (bridge.state.get("ids") or {}).get(str(payload.get("message_id")))
     if emoji is None or not isinstance(target, int):
         return
-    on = payload.get("added") is True or (payload.get("count") or 0) > 0
+    on = payload.get("added") is True
     reaction = [{"type": "emoji", "emoji": emoji}] if on else []
     try:
         await _send(context, bot, bridge, "setMessageReaction", message_id=target, reaction=reaction)

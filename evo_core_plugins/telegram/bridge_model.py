@@ -6,9 +6,12 @@ go out, and the pace a group gets. Pure functions on the standard library; ``bri
 Out to the group, a message is HTML within MAX_TEXT_CHARS (``outbound``): its author first, then its markdown as
 Telegram's HTML takes it: a fenced block or a table becomes ``<pre>`` (a table with its columns padded, since
 Telegram has no tables), inline code ``<code>``, ``**bold**`` and a heading ``<b>``, an http(s) link ``<a>``, the
-rest escaped. A message cut to fit ends with a link to it on the hub, kept whole. A run's progress is one line
-(``progress_text``) that the bridge edits as the run moves. Of the reactions of the hub only the agent's ✅ and ❌
-go out (REACTIONS); a bot's reaction is one of the emoji Telegram allows, so they go as 👍 and 👎.
+rest escaped. A message cut to fit ends with a link to it on the hub, kept whole. The files attached to it go as
+what ``file_method`` names: a JPEG, PNG or WebP within MAX_PHOTO_BYTES as a photo, any file within
+MAX_DOCUMENT_BYTES as a document; a larger one stays on the hub, named in the message with a link to it
+(``outbound``, ``caption``). A run's progress is one line (``progress_text``) that the bridge edits as the run moves.
+Of the reactions of the hub only the agent's ✅ and ❌ go out (REACTIONS); a bot's reaction is one of the emoji
+Telegram allows, and that list has neither, so they go as 👍 and 👎.
 
 In from the group (``inbound_text``), ``@<bot>`` becomes the mention of the chat's agent and ``@<username>`` of a
 Telegram account linked to the hub the mention of its member's login, as the hub reads mentions.
@@ -22,7 +25,7 @@ from __future__ import annotations
 import html
 import re
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from . import model as telegram
 
@@ -37,6 +40,9 @@ KEEP_RUNS = 30  # the runs whose progress message it remembers
 KEEP_TOLD = 200  # the senders it told how to link
 CUT_TAIL = '\n\n<a href="{url}">Read the rest on the hub</a>'
 FILES_ON_HUB = "(a file, on the hub)"
+OPEN_TAIL = '\n<a href="{url}">Open it on the hub</a>'
+LEFT_OUT = "Too large for Telegram, on the hub: {names}"
+LEFT_OUT_CHARS = 300  # the names of the files left out, cut to this
 PROGRESS_WORDS = {
     "queued": "waits for a worker",
     "leased": "picked up",
@@ -149,18 +155,57 @@ def author_line(author_kind: str, author: str | None) -> str:
     return "<b>hub</b>"
 
 
-def outbound(author_kind: str, author: str | None, body: str, url: str | None) -> str:
+def file_method(media_type: str, size: int) -> str | None:
+    """The Bot API method a file of ``media_type`` and ``size`` bytes goes to the group with: sendPhoto, sendDocument,
+    or None for one larger than a bot uploads, which stays on the hub."""
+    if media_type in telegram.PHOTO_TYPES and 0 < size <= telegram.MAX_PHOTO_BYTES:
+        return "sendPhoto"
+    if 0 < size <= telegram.MAX_DOCUMENT_BYTES:
+        return "sendDocument"
+    return None
+
+
+def _tail(url: str | None, left_out: Sequence[str]) -> str:
+    """The end of a message that names the files left on the hub and links to it there."""
+    tail = ""
+    if left_out:
+        names = telegram.clip(", ".join(telegram.upload_name(name) for name in left_out), LEFT_OUT_CHARS)
+        tail = "\n" + telegram.escape(LEFT_OUT.format(names=names))
+    if url:
+        tail += OPEN_TAIL.format(url=html.escape(url, quote=True))
+    return tail
+
+
+def outbound(author_kind: str, author: str | None, body: str, url: str | None, left_out: Sequence[str] = ()) -> str:
     """A message of the hub as the group reads it: its author, then its body as HTML, within MAX_TEXT_CHARS; when cut,
-    or when it is a file alone, it ends with a link to it on the hub (``url``)."""
+    or when it is a file alone, it ends with a link to it on the hub (``url``). The files too large for Telegram
+    (``left_out``) are named before that link."""
     head = author_line(author_kind, author)
     shown = markdown_html(body) if body.strip() else telegram.escape(FILES_ON_HUB)
     whole = f"{head}\n{shown}"
-    if not body.strip() and url:
-        return telegram.fit(whole, f'\n<a href="{html.escape(url, quote=True)}">Open it on the hub</a>')
+    if not body.strip() or left_out:
+        return telegram.fit(whole, _tail(url, left_out))
     if len(whole) <= telegram.MAX_TEXT_CHARS:
         return whole
     tail = CUT_TAIL.format(url=html.escape(url, quote=True)) if url else ""
     return telegram.fit(whole, tail)
+
+
+def caption(author_kind: str, author: str | None, url: str | None, left_out: Sequence[str] = ()) -> str:
+    """The caption of the first file of a message that is files alone: its author, and the files left on the hub
+    with a link to it, within MAX_CAPTION_CHARS."""
+    head = author_line(author_kind, author)
+    if not left_out:
+        return head
+    return telegram.fit(head, _tail(url, left_out), telegram.MAX_CAPTION_CHARS)
+
+
+def pending_files(state: Mapping, message_id: int, file_ids: Sequence[int]) -> dict:
+    """``state`` with the files of the hub's ``message_id`` still to go out (``file_ids``), none when empty."""
+    kept = {key: value for key, value in (state.get("files") or {}).items() if key != str(message_id)}
+    if file_ids:
+        kept[str(message_id)] = list(file_ids)
+    return {**state, "files": dict(list(kept.items())[-KEEP_IDS:])}
 
 
 def plain(text: str) -> str:

@@ -81,12 +81,17 @@ Every new message of the chat goes out, except the ones that came from the group
   and code blocks keep their form, and a markdown table becomes a `<pre>` block. A message over 4096 characters is cut
   and ends with a link to the rest on the hub. A reply on the hub replies to the group's message its thread started
   from.
-- No file goes out. The hub's API for bridges gives the text alone (evo-agents' `docs/chat-bridges.md`, Out). A message
-  that is only files goes out as a link to it on the hub.
+- The files a member or agent attached to the message go with it. The hub lists them in `BridgeMessage.files` and
+  gives their bytes through `bridge_file`, under the same check of the channel sink (evo-agents' `docs/chat-bridges.md`,
+  Out). A JPEG, PNG or WebP image of 10 MB at most goes as a photo (sendPhoto), and any other file of 50 MB at most as
+  a document (sendDocument), each as a reply to the message. A photo Telegram refuses goes again as a document. A
+  message that is only files goes as its first file, with its author as the caption. A larger file stays on the hub:
+  the message names it and links to the message there. One delivery uploads at most 20 MB after its first file, so it
+  ends within the hub's 30 seconds. The rest go on the next delivery.
 - A chat run started by a message from the group shows its progress as one message, sent as a reply and then edited
   (`Run #N: picked up`, then `working`, then `done`).
-- ✅ and ❌ that the hub puts on a message the bridge carried become the bot's 👍 and 👎 reactions in the group. Telegram
-  does not offer ✅ or ❌ as bot reactions.
+- ✅ and ❌ that the chat's agent puts on a message the bridge carried become the bot's 👍 and 👎 reactions in the
+  group. Telegram's list of reactions has neither ✅ nor ❌. A person's reaction on the hub stays on the hub.
 - A group gets at most 20 messages a minute. A message that would go past that waits, and the hub delivers it again
   later, in order.
 
@@ -104,5 +109,5 @@ Every new message of the chat goes out, except the ones that came from the group
 
 `plugin_tests/test_telegram_bridge.py` drives the bridge through a hub of evo-agents at the lock and the fake Bot API
 of `plugin_tests/fake_telegram.py`. It covers linking, unlinking, migration, mentions, members who have not linked,
-photos, HTML and cutting, progress, reactions and the pace of 20 messages a minute. The pure parts are in
+photos in, files out (photos, documents and files too large for Telegram), HTML and cutting, progress, reactions and the pace of 20 messages a minute. The pure parts are in
 `evo_core_plugins/telegram/bridge_model.py`.
