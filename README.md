@@ -11,6 +11,7 @@ and built on its API of core plugins alone (`evo_agents.hub.server.core_plugin_a
 | `crm` | `evo_core_plugins.crm` | The people who found a project themselves, as contacts with a stage (lead, invited, activated, retained) pushed to Signal ([docs/crm-plugin.md](docs/crm-plugin.md)) |
 | `marketing` | `evo_core_plugins.marketing` | The project's channels and the posts proposed on them, through a posting gate, a breaker, a budget and the weekly bulletin ([docs/marketing-plugin.md](docs/marketing-plugin.md)) |
 | `editorial` | `evo_core_plugins.editorial` | The posts of a blog through the stages and gates its config lists, the writer and judge agents that move them between a person's answers, their review rounds with the reviewers' draft comments, and the notebook of the reviewer's feedback with its probes and markdown export ([docs/editorial-plugin.md](docs/editorial-plugin.md)) |
+| `okr` | `evo_core_plugins.okr` | A project's strategy as a tree of business lines, objectives, key results and deliverables, linked to the hub's tasks, use cases, plans and goals, with how far each part has come computed on read and the gaps, the import of a source's items by ref, and the page OKR ([docs/okr-plugin.md](docs/okr-plugin.md)) |
 
 Each left evo-ak unchanged for its users: the same id, publisher (`evo-agents`) and entry point name, the same routes,
 MCP tool names, pages, commands (`evo-agents hub pm|crm|marketing`), variables (`EVO_HUB_TELEGRAM_*`) and knowledge
@@ -73,9 +74,18 @@ versions.
 | 2.1.1 | 1.4 | the same |
 | 2.1.2 | 1.4 | the same |
 | 2.2.0 | 1.5 | `49359c9ba0e5aca315f62520f03aeb127b05ac93` (pull request #293, plan chat-bridges) |
+| 2.3.0 | 1.5 | the same |
 
 ### Releases
 
+- **2.3.0**: the new plugin `okr`: a project's strategy as a tree (business line, objective, key result,
+  deliverable) in its own tables, a deliverable linked to the hub's tasks, use cases and plans and a key result to its
+  goal, each link checked against what the project holds. The roll-up is computed on read: a deliverable's progress
+  from its tasks, use cases and plan steps, a key result's goal met or not from the latest value of its signal, and the
+  gaps of the tree. A source writes its items through `POST /v1/x/okr/<project>/import`, upserted by ref, with a dry
+  run and prune to archived; the page OKR, `evo-agents hub okr` and the tools `okr__tree`, `okr__item`, `okr__link` and
+  `okr__unlink`. API 1.5, as 2.2.0; the chain `okr_0001` makes the plugin's tables on `evo-agents hub migrate`. The
+  other plugins are unchanged.
 - **2.2.0**: `telegram` bridges a Telegram group with a chat of the hub through the chat bridge of API 1.5:
   `/link <code>` in the group, linked members' messages come in as theirs (`@<bot>` mentions an agent), the chat's
   messages go out when their label is cleared for the project's `channel` sink, with photos, documents, run progress
