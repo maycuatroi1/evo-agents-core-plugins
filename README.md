@@ -72,9 +72,15 @@ versions.
 | 2.1.0 | 1.4 | `3e42aad7d4c626f43d6cf86a529e188b9fb1e76f` (pull request #270) |
 | 2.1.1 | 1.4 | the same |
 | 2.1.2 | 1.4 | the same |
+| 2.2.0 | 1.5 | `49359c9ba0e5aca315f62520f03aeb127b05ac93` (pull request #293, plan chat-bridges) |
 
 ### Releases
 
+- **2.2.0**: `telegram` bridges a Telegram group with a chat of the hub through the chat bridge of API 1.5:
+  `/link <code>` in the group, linked members' messages come in as theirs (`@<bot>` mentions an agent), the chat's
+  messages go out when their label is cleared for the project's `channel` sink, with photos, documents, run progress
+  as one edited message and an agent's ✅ and ❌ as reactions. The 1:1 channel is unchanged. Every plugin asks for API
+  1.5; hub admins run `evo-agents hub admin telegram --set-webhook` again for `my_chat_member`. No migration.
 - **2.1.2**: `editorial` hands the writer a task on a gate's answer only when it came through the hub (`via` hub,
   the default); an answer from inside a session (`claude-code`, `codex`) is kept and hands none, as that session goes
   on itself. API 1.4, no migration.
