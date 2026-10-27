@@ -2,7 +2,8 @@
 hub checks both first; a project that did not enable it answers 404).
 
 A reader reads the status (``GET /{project}/status``), the cost of the last 24 hours and 7 days
-(``GET /{project}/usage``) and the recent acts with how to undo each (``GET /{project}/acts``). A writer puts
+(``GET /{project}/usage``) and the recent acts with how to undo each (``GET /{project}/acts``) and the corrections that repeat
+(``GET /{project}/matches``). A writer puts
 questions to Jev (``POST /{project}/ask``). Nothing is sent to Jev unless the project set an api_key and a pinned
 model, declared the sink ``jev@typesafe`` in its policy and stays within its daily budget.
 """
@@ -16,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from evo_agents.hub.server import core_plugin_api as hub
 from evo_core_plugins.jev import cli_text, service
-from evo_core_plugins.jev.models import JevActs, JevAsked, JevAskIn, JevStatus, JevUsage
+from evo_core_plugins.jev.models import JevActs, JevAsked, JevAskIn, JevMatches, JevStatus, JevUsage
 
 REFUSALS = {code: {"model": hub.ErrorBody} for code in (403, 404, 409, 422, 502)}
 ProjectName = Annotated[str, Path(pattern=hub.PROJECT_NAME)]
@@ -63,6 +64,20 @@ async def acts(
     async with hub.begin(request) as conn:
         found = await service.acts(conn, hub.hub_config(request), user, project, limit)
     return _words(found, render, cli_text.acts)
+
+
+@router.get("/{project}/matches", response_model=JevMatches)
+async def matches(
+    request: Request,
+    project: ProjectName,
+    user: hub.Caller,
+    limit: Annotated[int, Query(ge=1, le=service.MAX_ACTS, description="how many, newest first")] = 50,
+    render: Render = None,
+):
+    """The corrections that repeat an earlier one or a rule the project accepted, newest first."""
+    async with hub.begin(request) as conn:
+        found = await service.matches(conn, hub.hub_config(request), user, project, limit)
+    return _words(found, render, cli_text.matches)
 
 
 @router.post("/{project}/ask", response_model=JevAsked)

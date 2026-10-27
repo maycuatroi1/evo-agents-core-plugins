@@ -3,7 +3,7 @@
 The plugin **jev** lets a project put questions about a state to Jev, the System One model of TypeSafe, and keeps what
 each call cost and what Jev decided. Its code is `evo_core_plugins/jev`; evo-agents-core-plugins ships it as a core
 plugin. It asks for API 1.6 of `core_plugin_api`, imports nothing else of the hub, keeps its tables with SQLAlchemy Core
-and its own migration chain (`jev_0001`, version table `alembic_version_jev`), and imports no other plugin.
+and its own migration chain (`jev_0001`, `jev_0002`, version table `alembic_version_jev`), and imports no other plugin.
 
 It does nothing, and sends nothing, when any of these holds: the project has not enabled it, it has no `api_key`, the
 project's policy declares no sink `jev@typesafe`, or every feature is off. In those cases the vendor receives no
@@ -35,6 +35,31 @@ sink, so what a project's policy keeps from that sink never leaves the hub.
 | `*_cap` | the most acts a feature applies by itself in a day (50) |
 | `rerank` | `off` (default) or `on` |
 
+## What the plugin does by itself
+
+Three features act without a member asking. Each is off until its mode is set, and each passes the same gates as a
+call of a member: the plugin enabled in the project, an `api_key` and a pinned `model`, the sink declared, the mode not
+`off`, and the daily budget. A call has no member behind it, so its audit row has no actor. A feature asks a model
+about a subject once (table `jev_asked`): a call Jev failed or answered late is booked as an act of kind `skipped`,
+the hub's job or event is not held up, and the subject is not asked again for that model. Text leaves the hub only as
+the core plugin API returns it, which is through the sink and its label gate. The permission `runs:read` is asked
+for the event of the triage.
+
+| Feature | When | What it asks | What it does |
+| --- | --- | --- | --- |
+| triage | the event `run.state` to `failed` | a `choice` among the 19 failure causes of the hub, each with a sentence | mode `apply`, a cause the hub guessed, a confidence at `triage_threshold` and fewer acts today than `triage_cap`: the cause is changed through the API and stays a guess, so the triage rules and the reruns read it as before. Otherwise an act that is not applied. A cause the worker reported only gets a suggestion |
+| kg_review | the job `kg_review`, at minute 0 of each hour | `possible_duplicate`: a `noul`, are the two nodes one; `ambiguous_match` (an edge): a `choice` among the files it may point to, and `unsure` | duplicate, noul at or above `kg_review_noul_yes` in mode `apply` and within the cap: a merge decision, active; at or below `kg_review_noul_no`: the item is dismissed, with the reason; in between, or in mode `suggest`: the merge is proposed. A match where Jev confirms the target the edge has is dismissed. Another target is only an act that is not applied |
+| corrections | the job `corrections`, daily at 01:30 UTC | the corrections of the day before: a `choice` among the candidates and `none` | a candidate is an earlier correction (90 days) or an accepted rule that shares at least 3 words and a quarter of the shorter text's words, found without a call to Jev; a match at `corrections_threshold` is a row of `jev_matches` in state `match`, below it `suggestion`; in mode `apply` the signal `delivery.repeat_correction_rate` of the day is pushed: matches over the day's corrections, left out for a day with none |
+
+[Inference] The API's text of a review item has no relation name and no text per node, so an `ambiguous_match` cannot
+become a link decision, and an item of one node (a mention) is not asked. The signal key must be declared by an admin
+of the project, or the push is refused and the matches stay in the table.
+
+Everything applied can be undone with the hub's own command (the page and `evo-agents hub jev acts` list it):
+`evo-agents hub run-cause restore RUN`, `evo-agents hub kg decisions undo N --project P --reason WHY` and
+`evo-agents hub kg review undismiss FINGERPRINT`. The cap counts acts applied, undone ones included. The signal is a
+value of the day that the hub's Signal keeps.
+
 ## The client
 
 One request is `POST <base_url>/v1/systemone` with `{model, state, questions}`; the answer carries `{model, answers,
@@ -64,6 +89,8 @@ project's sink declaration and the caller's writer role.
 | Table | What it holds |
 | --- | --- |
 | `jev_usage` | one row for each call: project, member, run, feature, model, input tokens, cost, status (`ok` or `error`), time |
+| `jev_asked` | one row for each subject (a run, a review fingerprint, a correction's evidence) a feature put to a model |
+| `jev_matches` | one row for each correction that repeats an earlier one or an accepted rule: day, evidence, candidate, model, confidence, state (`match` or `suggestion`) |
 | `jev_acts` | one row for each decision: kind, feature, target, outcome, model, confidence, whether it was applied, when it was undone, time |
 
 A failed call is booked once, with its status and no vendor text. Acts are recorded as not applied; a feature that
@@ -76,16 +103,19 @@ The page **Jev** shows the status of each feature, the cost of 24 hours and 7 da
 acts, each with the hub's command that undoes it. It is laid out for 375 px and uses the hub kit's light and dark
 tokens. Undo is the hub's own: for a triage act `evo-agents hub run-cause restore RUN --project P`
 (`POST /v1/projects/{p}/runs/{id}/cause/restore`), for a knowledge-graph review
-`evo-agents hub kg review undismiss FINGERPRINT --project P` (`DELETE /v1/kg/{project}/review/{fp}/dismiss`).
+`evo-agents hub kg review undismiss FINGERPRINT --project P` (`DELETE /v1/kg/{project}/review/{fp}/dismiss`), for a
+decision `evo-agents hub kg decisions undo N --project P --reason WHY` (`POST /v1/kg/{project}/decisions/{n}/undo`). The
+page also lists the corrections that repeat.
 
-Routes, under `/v1/x/jev/<project>`: `GET status`, `GET usage`, `GET acts?limit=`, `POST ask`. Each of the first three
-takes `render=text`.
+Routes, under `/v1/x/jev/<project>`: `GET status`, `GET usage`, `GET acts?limit=`, `GET matches?limit=`, `POST ask`. Each of
+the four reads takes `render=text`.
 
 ```sh
 evo-agents hub jev status --project northwind
 evo-agents hub jev ask --project northwind --file ask.json
 evo-agents hub jev usage --project northwind --json
 evo-agents hub jev acts --project northwind --limit 20
+evo-agents hub jev matches --project northwind
 ```
 
 `ask.json`:
@@ -103,4 +133,6 @@ evo-agents hub jev acts --project northwind --limit 20
 
 `plugin_tests/test_jev_plugin.py` runs the plugin against a fake Jev server (an `httpx.MockTransport`), with the
 resolver and the transport of `evo_core_plugins.jev.client` replaced. Tests whose names hold `optional` show the plugin
-does nothing when it is not enabled, has no key, has no sink or has every feature off.
+does nothing when it is not enabled, has no key, has no sink or has every feature off. `test_jev_triage.py`,
+`test_jev_review.py` and `test_jev_corrections.py` run each automatic feature against the same fake, with real runs,
+decisions, dismissals, sessions and signals on the hub.

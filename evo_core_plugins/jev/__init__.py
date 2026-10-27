@@ -19,12 +19,22 @@ from evo_core_plugins.jev.settings import CONFIG, HOST, SINK, SINK_KIND
 
 SERVER = "evo_core_plugins.jev.server"
 TOOLS = "evo_core_plugins.jev.tools"
+TRIAGE = "evo_core_plugins.jev.triage"
+REVIEW = "evo_core_plugins.jev.review"
+CORRECTIONS = "evo_core_plugins.jev.corrections"
+REVIEW_CRON = "0 * * * *"  # every hour, after the builds that queue the review
+CORRECTIONS_CRON = "30 1 * * *"  # once a day, after the UTC day it reads has ended
 
 TABLES = (
     ("jev_usage", "Each call to Jev: the project, who made it, the feature, the model, the input tokens and the cost"),
     (
         "jev_acts",
         "What Jev decided: the kind, the target, the outcome, the model, the confidence, applied or not, undone",
+    ),
+    ("jev_asked", "What a feature put to a model once: the subject and the model, so it is not asked again"),
+    (
+        "jev_matches",
+        "The corrections that repeat an earlier one or an accepted rule: the evidence, the match, the model",
     ),
 )
 
@@ -69,7 +79,7 @@ def _tools() -> list[dict]:
 def _manifest() -> dict:
     return {
         "id": "jev",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "publisher": "evo-agents",
         "tier": "core",
         "name": "Jev",
@@ -77,7 +87,7 @@ def _manifest() -> dict:
         "and of what it decided. Off until a project sets a key, pins a model and declares the sink.",
         "engines": {"evo-agents": ">=0.21"},
         "plugin_api": 1,
-        "permissions": [],
+        "permissions": ["runs:read"],
         "config": CONFIG,
         "egress": [{"id": SINK, "kind": SINK_KIND, "host": HOST}],
         "schema": {
@@ -89,6 +99,34 @@ def _manifest() -> dict:
             "routes": [{"name": "jev", "title": "Jev in a project", "python": f"{SERVER}:router"}],
             "pages": [{"name": name, **page} for name, page in PAGES.items()],
             "mcp_tools": _tools(),
+            "events": [
+                {
+                    "name": "triage",
+                    "title": "Read why a failed run failed",
+                    "description": "When a run moves to failed and the project turned triage on, asks Jev which cause "
+                    "the failure has and applies it, or only suggests it.",
+                    "on": ["run.state"],
+                    "python": f"{TRIAGE}:on_run_state",
+                }
+            ],
+            "jobs": [
+                {
+                    "name": "kg_review",
+                    "title": "Decide the open items of the graph's review queue",
+                    "description": "Asks Jev about the possible duplicates and ambiguous matches of the review "
+                    "queue, and merges, dismisses, proposes or suggests, within the daily cap.",
+                    "python": f"{REVIEW}:on_job",
+                    "cron": REVIEW_CRON,
+                },
+                {
+                    "name": "corrections",
+                    "title": "Find the corrections that repeat",
+                    "description": "Reads the corrections of the day before, asks Jev whether each repeats an "
+                    "earlier one or an accepted rule, records the matches and pushes the day's repeat rate.",
+                    "python": f"{CORRECTIONS}:on_job",
+                    "cron": CORRECTIONS_CRON,
+                },
+            ],
             "tables": [{"name": name, "title": title} for name, title in TABLES],
             "cli": CLI,
         },

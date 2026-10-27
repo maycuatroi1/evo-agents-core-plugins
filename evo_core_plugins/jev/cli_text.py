@@ -1,4 +1,4 @@
-"""The words of ``evo-agents hub jev status|ask|usage|acts`` without ``--json``: the routes answer them for the query
+"""The words of ``evo-agents hub jev status|ask|usage|acts|matches`` without ``--json``: the routes answer them for the query
 ``render=text`` (``cli.json``, ``output.render``), and the CLI prints them as they are. Each function takes what the
 route answers as JSON. Standard library only.
 """
@@ -84,3 +84,13 @@ def acts(found: dict) -> str:
     lines = table(("id", "when", "feature", "kind", "target", "outcome", "conf", "state"), rows)
     undo = [f"{INDENT}{act['id']}: {act['undo']['command']}" for act in found["acts"] if act["undo"]]
     return "\n".join(lines + (["", "Undo:"] + undo if undo else []))
+
+
+def matches(found: dict) -> str:
+    if not found["matches"]:
+        return f"No correction of {found['project']} matched an earlier one or an accepted rule yet"
+    rows = [
+        (m["id"], m["day"], m["evidence"], m["candidate"], f"{m['confidence']:.2f}", m["state"])
+        for m in found["matches"]
+    ]
+    return "\n".join(table(("id", "day", "evidence", "candidate", "conf", "state"), rows))

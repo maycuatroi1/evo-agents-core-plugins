@@ -53,6 +53,14 @@ evo.messages("vi", {
     "undone": "Đã hoàn tác",
     "undoWith": "Hoàn tác bằng lệnh của hub:"
   },
+  "matches": {
+    "title": "Lời sửa lặp lại",
+    "emptyTitle": "Chưa có lời sửa nào khớp",
+    "emptyText": "Bật tính năng lời sửa trong cấu hình Jev của dự án; job đọc lời sửa của ngày hôm trước.",
+    "confidence": "độ tin cậy {value}",
+    "match": "Khớp",
+    "suggestion": "Gợi ý"
+  },
   "common": {
     "retry": "Thử lại"
   }

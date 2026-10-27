@@ -7,7 +7,7 @@ means), ``noul`` (a number from 0 to 1, how much it is a yes; criteria optional:
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
@@ -132,3 +132,19 @@ class JevAct(BaseModel):
 class JevActs(BaseModel):
     project: str
     acts: list[JevAct]
+
+
+class JevMatch(BaseModel):
+    id: int
+    day: date
+    evidence: str
+    candidate: str
+    model: str
+    confidence: float
+    state: Literal["match", "suggestion"]
+    created_at: datetime
+
+
+class JevMatches(BaseModel):
+    project: str
+    matches: list[JevMatch]

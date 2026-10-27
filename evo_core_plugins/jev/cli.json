@@ -108,5 +108,31 @@
       ],
       "schema": "JevActs"
     }
+  },
+  {
+    "name": "matches",
+    "help": "the corrections that repeat an earlier one or an accepted rule, newest first",
+    "project": true,
+    "http": {
+      "method": "GET",
+      "path": "matches"
+    },
+    "args": [
+      {
+        "name": "limit",
+        "type": "integer",
+        "in": "query",
+        "help": "how many matches, newest first (50 when unsaid)"
+      }
+    ],
+    "output": {
+      "render": "text",
+      "json": "object",
+      "keys": [
+        "project",
+        "matches"
+      ],
+      "schema": "JevMatches"
+    }
   }
 ]

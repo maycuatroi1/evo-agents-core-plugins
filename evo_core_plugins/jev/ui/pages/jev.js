@@ -127,13 +127,31 @@
     return page.section("jev-acts-section", t("acts.title"), el("span", { class: "page-count", text: String(found.acts.length) }), body);
   }
 
+  function matchItem(match) {
+    var line = [
+      el("span", { class: "evo-mono evo-small page-wrap", text: match.evidence }),
+      el("span", { class: "evo-mono evo-small page-wrap", text: match.candidate }),
+      el("span", { class: "evo-small evo-muted", text: t("matches.confidence", { value: page.number(match.confidence, { maximumFractionDigits: 2 }) }) }),
+      page.badge(match.state === "match" ? t("matches.match") : t("matches.suggestion"), match.state === "match" ? "success" : "info", { testid: "jev-match-state" }),
+      el("span", { class: "evo-small evo-muted page-end" }, page.when(match.created_at)),
+    ];
+    return el("li", { testid: "jev-match", "data-match": match.id }, el("div", { class: "page-line" }, line));
+  }
+
+  function matchSection(found) {
+    var body = found.matches.length
+      ? el("ul", { class: "page-list", "aria-label": t("matches.title"), testid: "jev-matches" }, found.matches.map(matchItem))
+      : el("div", { class: "evo-empty", testid: "jev-no-matches" }, [el("p", { class: "evo-empty-title", text: t("matches.emptyTitle") }), el("p", { class: "evo-muted", text: t("matches.emptyText") })]);
+    return page.section("jev-matches-section", t("matches.title"), el("span", { class: "page-count", text: String(found.matches.length) }), body);
+  }
+
   function load() {
     page.fill(root, el("p", { class: "evo-muted", text: t("sub") }));
     root.setAttribute("data-testid", "jev-page");
     root.setAttribute("aria-busy", "true");
-    return Promise.all([page.call("status"), page.call("usage"), page.call("acts", { query: { limit: 20 } })]).then(
+    return Promise.all([page.call("status"), page.call("usage"), page.call("acts", { query: { limit: 20 } }), page.call("matches", { query: { limit: 20 } })]).then(
       function (found) {
-        page.fill(root, [el("p", { class: "evo-muted", text: t("sub") }), statusSection(found[0]), costSection(found[1]), featureSection(found[0]), actSection(found[2])]);
+        page.fill(root, [el("p", { class: "evo-muted", text: t("sub") }), statusSection(found[0]), costSection(found[1]), featureSection(found[0]), actSection(found[2]), matchSection(found[3])]);
         root.removeAttribute("aria-busy");
       },
       function (error) {

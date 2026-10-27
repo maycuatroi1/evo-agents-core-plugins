@@ -53,6 +53,14 @@ evo.messages("en", {
     "undone": "Undone",
     "undoWith": "Undo with the hub's command:"
   },
+  "matches": {
+    "title": "Corrections that repeat",
+    "emptyTitle": "No correction matched yet",
+    "emptyText": "Turn on corrections in the project's Jev settings; the job reads the day before.",
+    "confidence": "confidence {value}",
+    "match": "Match",
+    "suggestion": "Suggestion"
+  },
   "common": {
     "retry": "Try again"
   }

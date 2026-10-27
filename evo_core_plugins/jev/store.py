@@ -3,10 +3,11 @@ read or write them. SQLAlchemy Core on ``tables`` alone."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from evo_agents.hub.server import core_plugin_api as hub
@@ -183,3 +184,76 @@ async def mark_undone(conn: AsyncConnection, project_id: int, act_id: int) -> bo
         .values(undone_at=func.now())
     )
     return done.rowcount == 1
+
+
+# What a feature asked a model once
+
+
+async def claim(conn: AsyncConnection, project_id: int, feature: str, subject: str, model: str) -> bool:
+    """Take the right to ask ``model`` about ``subject`` for ``feature``: True the first time, False once it was asked
+    (a failed turn counts: the call may have cost money, and the next pass does not repeat it)."""
+    taken = await conn.execute(
+        pg_insert(jev.asked)
+        .values(project_id=project_id, feature=feature, subject=subject[: jev.MAX_TARGET_CHARS], model=model)
+        .on_conflict_do_nothing()
+        .returning(jev.asked.c.subject)
+    )
+    return taken.first() is not None
+
+
+async def release(conn: AsyncConnection, project_id: int, feature: str, subject: str, model: str) -> None:
+    """Give the claim back, for a turn that stopped before anything was sent."""
+    t = jev.asked.c
+    await conn.execute(
+        delete(jev.asked).where(
+            t.project_id == project_id,
+            t.feature == feature,
+            t.subject == subject[: jev.MAX_TARGET_CHARS],
+            t.model == model,
+        )
+    )
+
+
+# The corrections that repeat
+
+
+async def record_match(
+    conn: AsyncConnection,
+    project_id: int,
+    *,
+    day: date,
+    evidence: str,
+    candidate: str,
+    model: str,
+    confidence: float,
+    state: str,
+) -> None:
+    """One correction's match (``jev.MATCH_STATES``); a correction matched already by this model keeps its row."""
+    await conn.execute(
+        pg_insert(jev.matches)
+        .values(
+            project_id=project_id,
+            day=day,
+            evidence=evidence[: jev.MAX_TARGET_CHARS],
+            candidate=candidate[: jev.MAX_TARGET_CHARS],
+            model=model,
+            confidence=confidence,
+            state=state,
+        )
+        .on_conflict_do_nothing()
+    )
+
+
+async def recent_matches(conn: AsyncConnection, project_id: int, limit: int) -> list:
+    m = jev.matches.c
+    query = (
+        select(jev.matches).where(m.project_id == project_id).order_by(m.created_at.desc(), m.id.desc()).limit(limit)
+    )
+    return list((await conn.execute(query)).all())
+
+
+async def matched_on(conn: AsyncConnection, project_id: int, day: date) -> int:
+    """How many corrections of ``day`` a model matched over the threshold (state ``match``)."""
+    m = jev.matches.c
+    query = select(func.count()).where(m.project_id == project_id, m.day == day, m.state == "match")
+    return int((await conn.execute(query)).scalar_one())

@@ -143,7 +143,7 @@ def declare_sink(hub_db) -> None:
 @pytest.fixture
 def enabled(client, members, fake):  # noqa: F811
     """``members`` with jev enabled and nothing else: no key, no model, no sink."""
-    enable(client, members["owner"], "jev")
+    enable(client, members["owner"], "jev", ["runs:read"])
     return members
 
 
@@ -162,7 +162,8 @@ def count(hub_db, table) -> int:
 def untouched(fake: FakeJev, hub_db) -> None:
     """The invariant: nothing was sent, and no table of the plugin got a row."""
     assert fake.requests == []
-    assert (count(hub_db, jev_tables.usage), count(hub_db, jev_tables.acts)) == (0, 0)
+    tables_of_the_plugin = (jev_tables.usage, jev_tables.acts, jev_tables.asked, jev_tables.matches)
+    assert [count(hub_db, table) for table in tables_of_the_plugin] == [0, 0, 0, 0]
 
 
 def ok(answer, status: int = 200):
@@ -195,12 +196,17 @@ def on_hub(client, work):
 def test_jev_manifest_declares_the_sink_the_config_the_tools_and_the_ledger():
     found = manifest()
     contributes = found["contributes"]
-    assert (found["id"], found["version"], found["permissions"]) == ("jev", "1.1.0", [])
+    assert (found["id"], found["version"], found["permissions"]) == ("jev", "1.2.0", ["runs:read"])
     assert found["egress"] == [{"id": "jev@typesafe", "kind": "llm-backend", "host": "api.typesafe.ai"}]
     assert [t["name"] for t in contributes["mcp_tools"]] == ["decide", "usage"]
     assert [(p["name"], p["entry"]) for p in contributes["pages"]] == [("jev", "pages/jev.html")]
     assert [t["name"] for t in contributes["tables"]] == list(jev_tables.NAMES)
-    assert {c["name"] for c in contributes["cli"]} == {"status", "ask", "usage", "acts"}
+    assert {c["name"] for c in contributes["cli"]} == {"status", "ask", "usage", "acts", "matches"}
+    assert [(e["name"], e["on"]) for e in contributes["events"]] == [("triage", ["run.state"])]
+    assert {j["name"]: j["cron"] for j in contributes["jobs"]} == {
+        "kg_review": "0 * * * *",
+        "corrections": "30 1 * * *",
+    }
     assert found["schema"]["migrations"] == "evo_core_plugins.jev.migrations"
     assert hub_api.plugin("evo_core_plugins.jev.store").egress == (
         hub_api.EgressSink("jev@typesafe", "llm-backend", "api.typesafe.ai"),
@@ -651,7 +657,10 @@ def test_jev_the_page_reads_at_a_narrow_screen_in_light_and_dark_in_english_and_
         "colours come from the kit"
     )
     script = (pages / "jev.js").read_text(encoding="utf-8")
-    assert all(f'page.call("{route}"' in script for route in ("status", "usage", "acts")) and "undo.command" in script
+    assert (
+        all(f'page.call("{route}"' in script for route in ("status", "usage", "acts", "matches"))
+        and "undo.command" in script
+    )
     english = (pages / "i18n" / "en.js").read_text(encoding="utf-8")
     vietnamese = (pages / "i18n" / "vi.js").read_text(encoding="utf-8")
     keys = set(json.loads(english[english.index("{") : english.rindex("}") + 1]))
@@ -662,9 +671,15 @@ def test_jev_cli_commands_are_in_the_contract_each_with_json():
     from evo_agents.hub.contract import commands
 
     printed = commands()
-    verbs = ("status", "ask", "usage", "acts")
+    verbs = ("status", "ask", "usage", "acts", "matches")
     assert {f"hub jev {verb}" for verb in verbs} <= set(printed)
-    schemas = {"status": "JevStatus", "ask": "JevAsked", "usage": "JevUsage", "acts": "JevActs"}
+    schemas = {
+        "status": "JevStatus",
+        "ask": "JevAsked",
+        "usage": "JevUsage",
+        "acts": "JevActs",
+        "matches": "JevMatches",
+    }
     for verb in verbs:
         found = printed[f"hub jev {verb}"]
         assert found["json"]["schema"] == schemas[verb] and found["json"]["kind"] == "object"

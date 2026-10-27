@@ -32,6 +32,8 @@ from evo_core_plugins.jev.models import (
     JevAsked,
     JevAskIn,
     JevFeature,
+    JevMatch,
+    JevMatches,
     JevStatus,
     JevUndo,
     JevUsage,
@@ -162,6 +164,12 @@ def undo_of(project: str, feature: str, target: str, applied: bool, undone: bool
             method="DELETE",
             path=f"/v1/kg/{project}/review/{ref}/dismiss",
         )
+    if feature == "kg_review" and kind == "decision" and ref.isdigit():
+        return JevUndo(
+            command=f"evo-agents hub kg decisions undo {ref} --project {project} --reason <why>",
+            method="POST",
+            path=f"/v1/kg/{project}/decisions/{ref}/undo",
+        )
     return None
 
 
@@ -184,6 +192,28 @@ async def acts(conn: AsyncConnection, config, session: hub.Session, project: str
                 undone_at=row.undone_at,
                 created_at=row.created_at,
                 undo=undo_of(project, row.feature, row.target, row.applied, row.undone_at is not None),
+            )
+            for row in rows
+        ],
+    )
+
+
+async def matches(conn: AsyncConnection, config, session: hub.Session, project: str, limit: int = 50) -> JevMatches:
+    """The corrections that repeat an earlier one or an accepted rule, newest first."""
+    gate = await _gate(conn, config, session, project, write=False)
+    rows = await store.recent_matches(conn, gate.access.id, max(1, min(limit, MAX_ACTS)))
+    return JevMatches(
+        project=project,
+        matches=[
+            JevMatch(
+                id=row.id,
+                day=row.day,
+                evidence=row.evidence,
+                candidate=row.candidate,
+                model=row.model,
+                confidence=row.confidence,
+                state=row.state,
+                created_at=row.created_at,
             )
             for row in rows
         ],
@@ -258,23 +288,42 @@ def _outcome(answer: JevAnswer) -> str:
     return f"{answer.noul:.3f}" if answer.type == "noul" else f"{answer.score:g}"
 
 
-async def ask(
+@dataclass(frozen=True)
+class Exchange:
+    """What one request to Jev came to: ``asked`` when it answered, else ``failure`` in words, and whether the request
+    ``sent`` anything out (a refusal before the call sends nothing and books nothing)."""
+
+    asked: JevAsked | None
+    failure: str | None = None
+    sent: bool = False
+    status: int = 502
+
+
+async def exchange(
     begin: Begin,
     config,
-    session: hub.Session,
     project: str,
     asked: JevAskIn,
     *,
     feature: str = TOOL,
+    session: hub.Session | None = None,
     run_id: int | None = None,
     audit_as: str = "decide",
-) -> JevAsked:
-    """Put ``asked`` to Jev for ``session`` in ``project``: refuses with ``hub.Refused`` (409 for a gate, 502 for a
-    failed call, 422 for a request too large) and books the call and what Jev decided."""
+    record_acts: bool = True,
+) -> Exchange:
+    """Put ``asked`` to Jev in ``project``, for ``session`` (a member, a writer) or, with none, for a feature of the
+    plugin itself (a job or an event: the plugin is enabled in the project, and the gates after that are the same).
+    ``hub.Refused`` for a gate that stops the call before anything is sent (409 for the config, the policy, a feature
+    that is off or the budget; 422 for a request too large); once the call is made, a failure comes back in the
+    ``Exchange``, booked as the call's usage and with no act."""
     async with begin() as conn:
-        gate = await _gate(conn, config, session, project, write=True)
+        if session is not None:
+            gate = await _gate(conn, config, session, project, write=True)
+            project_id, found = gate.access.id, gate.settings
+        else:
+            project_id = (await hub.read_project(conn, store.handle(), project)).id
+            found = settings.read((await _config(conn, config, project)).values)
         values = await _config(conn, config, project)
-        found = gate.settings
         why = problems(found, tuple(values.missing_secrets), await sink_declared(conn, project), project)
         if why:
             raise hub.Refused(409, why[0])
@@ -284,7 +333,7 @@ async def ask(
         size = len(json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode())
         if size > client.MAX_REQUEST_BYTES:
             raise hub.Refused(422, f"the request is {size} bytes; a call takes at most {client.MAX_REQUEST_BYTES}")
-        spent = await store.spent_since(conn, gate.access.id, store.midnight())
+        spent = await store.spent_since(conn, project_id, store.midnight())
         estimate = store.cost_of(size)  # one token is at least one byte: an upper bound
         if spent + estimate > Decimal(str(found.daily_usd)):
             raise hub.Refused(
@@ -315,19 +364,19 @@ async def ask(
         if failure is None or failure.sent:
             await store.record_usage(
                 conn,
-                gate.access.id,
-                user_id=session.user_id,
+                project_id,
+                user_id=session.user_id if session is not None else None,
                 run_id=run_id,
                 feature=feature,
                 model=found.model,
                 tokens=tokens,
                 status="ok" if failure is None else "error",
             )
-        if failure is None:
+        if failure is None and record_acts:
             for name, answer in answers.items():
                 await store.record_act(
                     conn,
-                    gate.access.id,
+                    project_id,
                     kind=answer.type,
                     feature=feature,
                     target=name,
@@ -338,16 +387,56 @@ async def ask(
                 )
         note = f"{project}: failed" if failure is not None else f"{project}: {len(answers)} questions, {tokens} tokens"
         if failure is None or failure.sent:
-            await hub.audit(conn, store.handle(), session, f"jev.{audit_as}", note, project=gate.access)
+            if session is not None:
+                await hub.audit(conn, store.handle(), session, f"jev.{audit_as}", note, project=gate.access)
+            else:
+                await hub.record_audit(conn, store.handle(), project, f"jev.{audit_as}", note)
     if failure is not None:  # after the transaction, so the booking of the call stays
-        raise hub.Refused(502, str(failure))
-    return JevAsked(
-        project=project,
-        model=found.model,
-        input_tokens=tokens,
-        cost_usd=float(store.cost_of(tokens)),
-        answers=answers,
+        return Exchange(None, str(failure), failure.sent)
+    return Exchange(
+        JevAsked(
+            project=project,
+            model=found.model,
+            input_tokens=tokens,
+            cost_usd=float(store.cost_of(tokens)),
+            answers=answers,
+        ),
+        sent=True,
     )
+
+
+async def ask(
+    begin: Begin,
+    config,
+    session: hub.Session,
+    project: str,
+    asked: JevAskIn,
+    *,
+    feature: str = TOOL,
+    run_id: int | None = None,
+    audit_as: str = "decide",
+) -> JevAsked:
+    """Put ``asked`` to Jev for ``session`` in ``project``: refuses with ``hub.Refused`` (409 for a gate, 502 for a
+    failed call, 422 for a request too large) and books the call and what Jev decided."""
+    done = await exchange(
+        begin, config, project, asked, feature=feature, session=session, run_id=run_id, audit_as=audit_as
+    )
+    if done.asked is None:
+        raise hub.Refused(done.status, done.failure or "Jev did not answer")
+    return done.asked
+
+
+async def automatic(
+    begin: Begin, config, project: str, asked: JevAskIn, *, feature: str, run_id: int | None = None
+) -> Exchange:
+    """The call a feature of the plugin makes by itself: as ``exchange`` with no member, no act booked (the feature
+    books its own) and a refusal before the call returned as an ``Exchange`` that sent nothing."""
+    try:
+        return await exchange(
+            begin, config, project, asked, feature=feature, run_id=run_id, audit_as=feature, record_acts=False
+        )
+    except hub.Refused as exc:
+        return Exchange(None, str(exc.detail), False, exc.status_code)
 
 
 def parse(state, questions) -> JevAskIn:
@@ -358,4 +447,4 @@ def parse(state, questions) -> JevAskIn:
         raise hub.Refused(422, said(exc)) from None
 
 
-__all__ = ["TOOL", "ask", "acts", "can_apply", "parse", "status", "usage"]
+__all__ = ["TOOL", "Exchange", "ask", "automatic", "acts", "can_apply", "exchange", "parse", "status", "usage"]
