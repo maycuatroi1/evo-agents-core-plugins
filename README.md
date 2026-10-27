@@ -78,9 +78,13 @@ versions.
 | 2.3.0 | 1.5 | the same |
 | 2.4.0 | 1.6 | `64207689e8a3ed6709c873f5d7d94f01365c9f77` (pull request #297, plan jev-decisions) |
 | 2.4.1 | 1.6 | the same |
+| 2.5.0 | 1.7 | `105882621becad32331d60b86a151a034c1a6406` (pull request #314) |
 
 ### Releases
 
+- **2.5.0**: jev's KG review reads the rules it can judge (`possible_duplicate`, `ambiguous_match`) with the filter
+  `rules` of `read_review_queue`, so the long head of another rule no longer hides them; every plugin asks API 1.7.
+  The plugin `jev` is 1.4.0.
 - **2.4.1**: the release of 2.4.0 stopped at its test of the installed plugins, which pinned every manifest to 1.1.0; nothing was
   published as 2.4.0. The content is that of 2.4.0 (the plugin `jev`, API 1.6).
 - **2.4.0**: the new plugin `jev`: asks the decision model Jev of TypeSafe through the tool `jev__decide`, keeps a cost

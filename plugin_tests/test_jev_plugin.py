@@ -196,7 +196,7 @@ def on_hub(client, work):
 def test_jev_manifest_declares_the_sink_the_config_the_tools_and_the_ledger():
     found = manifest()
     contributes = found["contributes"]
-    assert (found["id"], found["version"], found["permissions"]) == ("jev", "1.3.0", ["runs:read"])
+    assert (found["id"], found["version"], found["permissions"]) == ("jev", "1.4.0", ["runs:read"])
     assert found["egress"] == [{"id": "jev@typesafe", "kind": "llm-backend", "host": "api.typesafe.ai"}]
     assert [t["name"] for t in contributes["mcp_tools"]] == ["decide", "usage"]
     assert [(p["name"], p["entry"]) for p in contributes["pages"]] == [("jev", "pages/jev.html")]
@@ -624,9 +624,9 @@ def test_jev_optional_every_plugin_of_the_distribution_requires_the_same_api():
 
     versions = {name: importlib.import_module(f"evo_core_plugins.{name}").API for name in PLUGINS}
     assert "jev" in versions and set(versions.values()) == {
-        hub_api.API_VERSION == (1, 6) and (1, 6) or hub_api.API_VERSION
+        hub_api.API_VERSION == (1, 7) and (1, 7) or hub_api.API_VERSION
     }
-    assert versions["jev"] == (1, 6)
+    assert versions["jev"] == (1, 7)
 
 
 def test_jev_optional_the_code_the_tests_and_the_docs_use_fictional_names():

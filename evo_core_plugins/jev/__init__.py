@@ -80,7 +80,7 @@ def _tools() -> list[dict]:
 def _manifest() -> dict:
     return {
         "id": "jev",
-        "version": "1.3.0",
+        "version": "1.4.0",
         "publisher": "evo-agents",
         "tier": "core",
         "name": "Jev",
@@ -144,7 +144,7 @@ def _manifest() -> dict:
     }
 
 
-API = (1, 6)  # the version of the core plugin API the plugin is written for
+API = (1, 7)  # the version of the core plugin API the plugin is written for
 
 
 def manifest() -> dict:
