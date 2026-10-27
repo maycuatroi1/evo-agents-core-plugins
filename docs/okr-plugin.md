@@ -6,7 +6,7 @@ key result. A deliverable links to the hub's tasks, use cases and plans; a key r
 that measures it, the Loop's goal with its metric and target. From those links the plugin computes, on every read, how
 far each deliverable, key result, objective and business line has come, and what the tree lacks. Its code is
 `evo_core_plugins/okr`; evo-agents-core-plugins ships it as a core plugin, which the hub's image pins (evo-agents'
-`docs/plugins.md`, Core plugins). It asks for API 1.5 of `core_plugin_api` and does nothing in a project until an admin
+`docs/plugins.md`, Core plugins). It asks for API 1.6 of `core_plugin_api` and does nothing in a project until an admin
 of the project enables it there; until then it writes no row and its routes answer 404.
 
 The plugin keeps the tree and the links in its own tables. It reads the hub's tasks, SRS items, plans, goals and signals

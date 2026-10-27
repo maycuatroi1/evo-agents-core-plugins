@@ -1,0 +1,40 @@
+/* What the page Jev adds to the hub's UI kit 1 and common.css: the figures of the cost, the budget meter and the
+   command that undoes an act, each from the kit's own tokens so the theme follows, at 375 px and wider. */
+.jev-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+.jev-figures > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.jev-figures dt {
+  color: var(--muted-foreground);
+}
+.jev-figures dd {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.jev-budget {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.jev-budget .page-meter {
+  width: 100%;
+}
+.jev-undo {
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

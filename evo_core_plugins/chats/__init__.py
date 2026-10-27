@@ -19,7 +19,7 @@ the API the plugin is written for: a hub that serves another leaves the plugin o
 
 from evo_agents.hub.server import core_plugin_api as hub
 
-API = (1, 5)  # the version of the API of core plugins this plugin is written for
+API = (1, 6)  # the version of the API of core plugins this plugin is written for
 KG = "evo_core_plugins.chats.kg"
 READS = "chats:read"  # what the source reads: the project's group chats (evo_agents.plugins.manifest.PERMISSIONS)
 

@@ -12,6 +12,7 @@ and built on its API of core plugins alone (`evo_agents.hub.server.core_plugin_a
 | `marketing` | `evo_core_plugins.marketing` | The project's channels and the posts proposed on them, through a posting gate, a breaker, a budget and the weekly bulletin ([docs/marketing-plugin.md](docs/marketing-plugin.md)) |
 | `editorial` | `evo_core_plugins.editorial` | The posts of a blog through the stages and gates its config lists, the writer and judge agents that move them between a person's answers, their review rounds with the reviewers' draft comments, and the notebook of the reviewer's feedback with its probes and markdown export ([docs/editorial-plugin.md](docs/editorial-plugin.md)) |
 | `okr` | `evo_core_plugins.okr` | A project's strategy as a tree of business lines, objectives, key results and deliverables, linked to the hub's tasks, use cases, plans and goals, with how far each part has come computed on read and the gaps, the import of a source's items by ref, and the page OKR ([docs/okr-plugin.md](docs/okr-plugin.md)) |
+| `jev` | `evo_core_plugins.jev` | Decisions put to Jev, TypeSafe's System One model, through a pinned and budgeted egress sink: the tools `jev__decide` and `jev__usage`, a ledger of cost and acts, the page Jev and `evo-agents hub jev`; every feature is off until a project turns it on ([docs/jev-plugin.md](docs/jev-plugin.md)) |
 
 Each left evo-ak unchanged for its users: the same id, publisher (`evo-agents`) and entry point name, the same routes,
 MCP tool names, pages, commands (`evo-agents hub pm|crm|marketing`), variables (`EVO_HUB_TELEGRAM_*`) and knowledge
@@ -75,9 +76,16 @@ versions.
 | 2.1.2 | 1.4 | the same |
 | 2.2.0 | 1.5 | `49359c9ba0e5aca315f62520f03aeb127b05ac93` (pull request #293, plan chat-bridges) |
 | 2.3.0 | 1.5 | the same |
+| 2.4.0 | 1.6 | `64207689e8a3ed6709c873f5d7d94f01365c9f77` (pull request #297, plan jev-decisions) |
 
 ### Releases
 
+- **2.4.0**: the new plugin `jev`: asks the decision model Jev of TypeSafe through the tool `jev__decide`, keeps a cost
+  ledger and a list of what Jev did on a page and in the CLI, and, per project and per feature (off, suggest or apply),
+  classifies the cause of failed runs, reviews the knowledge graph queue, spots repeated corrections and reranks
+  `history_search` and `kg_search`. Above its threshold a result is applied (undoable), below it it is a suggestion.
+  Needs the sink `jev@typesafe` in the project's policy and an API key. Every plugin now asks for API 1.6, so this
+  release needs a hub that serves 1.6. Migration chain `jev_0001`, `jev_0002`.
 - **2.3.0**: the new plugin `okr`: a project's strategy as a tree (business line, objective, key result,
   deliverable) in its own tables, a deliverable linked to the hub's tasks, use cases and plans and a key result to its
   goal, each link checked against what the project holds. The roll-up is computed on read: a deliverable's progress

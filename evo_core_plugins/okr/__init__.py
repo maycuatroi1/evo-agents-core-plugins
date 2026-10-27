@@ -107,7 +107,7 @@ def _manifest() -> dict:
     }
 
 
-API = (1, 5)  # the version of the core plugin API the plugin is written for
+API = (1, 6)  # the version of the core plugin API the plugin is written for
 
 
 def manifest() -> dict:

@@ -5,7 +5,7 @@ at, the gates where a post waits for a person, the review rounds of a draft with
 notebook: what the person corrected, in their own words, with the rule it gives and how often it came back. Agents
 read the notebook before a stage so the same correction is not needed twice. Its code is `evo_core_plugins/editorial`;
 evo-agents-core-plugins ships it as a core plugin, which the hub's image pins (evo-agents' `docs/plugins.md`, Core
-plugins). It asks for API 1.5 of `core_plugin_api` and does nothing in a project until an admin of the project enables
+plugins). It asks for API 1.6 of `core_plugin_api` and does nothing in a project until an admin of the project enables
 it there; until then it writes no row and its routes answer 404.
 
 Without `repo` in its config the plugin only stores what its routes, CLI and tools are told. With it, the plugin runs

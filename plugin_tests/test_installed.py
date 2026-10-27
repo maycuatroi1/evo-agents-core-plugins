@@ -73,7 +73,7 @@ def test_the_channel_of_kind_telegram_is_this_plugins():
     assert notifications.channel_class("telegram") is TelegramChannel
     assert hub.plugin("evo_core_plugins.telegram.server").id == "telegram"
     assert hub.plugin("evo_core_plugins.chats.kg").id == "chats"
-    for name in ("pm", "crm", "marketing", "okr"):
+    for name in ("pm", "crm", "marketing", "okr", "jev"):
         assert hub.plugin(f"evo_core_plugins.{name}.server").id == name
 
 
