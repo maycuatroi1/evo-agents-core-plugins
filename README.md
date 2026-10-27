@@ -77,9 +77,12 @@ versions.
 | 2.2.0 | 1.5 | `49359c9ba0e5aca315f62520f03aeb127b05ac93` (pull request #293, plan chat-bridges) |
 | 2.3.0 | 1.5 | the same |
 | 2.4.0 | 1.6 | `64207689e8a3ed6709c873f5d7d94f01365c9f77` (pull request #297, plan jev-decisions) |
+| 2.4.1 | 1.6 | the same |
 
 ### Releases
 
+- **2.4.1**: the release of 2.4.0 stopped at its test of the installed plugins, which pinned every manifest to 1.1.0; nothing was
+  published as 2.4.0. The content is that of 2.4.0 (the plugin `jev`, API 1.6).
 - **2.4.0**: the new plugin `jev`: asks the decision model Jev of TypeSafe through the tool `jev__decide`, keeps a cost
   ledger and a list of what Jev did on a page and in the CLI, and, per project and per feature (off, suggest or apply),
   classifies the cause of failed runs, reviews the knowledge graph queue, spots repeated corrections and reranks
