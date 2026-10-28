@@ -79,9 +79,12 @@ versions.
 | 2.4.0 | 1.6 | `64207689e8a3ed6709c873f5d7d94f01365c9f77` (pull request #297, plan jev-decisions) |
 | 2.4.1 | 1.6 | the same |
 | 2.5.0 | 1.7 | `105882621becad32331d60b86a151a034c1a6406` (pull request #314) |
+| 2.5.1 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` (pull request #327, plan kg-retrieval-quality) |
 
 ### Releases
 
+- **2.5.1**: the tests of `telegram` follow evo-agents 0.51, whose push, merge, plan_finished and run_outputs notices only
+  report: a run's files stay on the hub. No plugin changes.
 - **2.5.0**: jev's KG review reads the rules it can judge (`possible_duplicate`, `ambiguous_match`) with the filter
   `rules` of `read_review_queue`, so the long head of another rule no longer hides them; every plugin asks API 1.7.
   The plugin `jev` is 1.4.0.
