@@ -1,7 +1,9 @@
 """The files of a run and of a question on Telegram through a hub (plan run-outputs: a4, a6), with a fake Bot API and
 the fake S3 of evo-agents' tests: what the hub's prepare gives the channel (``extra.outputs``, presigned GETs of the
-store) goes to the chat as photos or documents with the run's link, a question's files before the question; a
-restricted project's chat gets no file and no file's name, and an image taken out of a tool's result never goes.
+store) goes to the chat as photos or documents, a question's files before the question; a restricted project's chat
+gets no file and no file's name, and an image taken out of a tool's result never goes. The notice of a run's files
+(run_outputs) only reports: the hub keeps it on the web and gives it to no channel (evo-agents'
+runs.REPORT_NOTICE_KINDS, docs/notifications.md), so it never reaches a chat, with the store or without.
 
 These need a hub that gives channels a notification's files: evo-agents with the notice run_outputs (plan
 run-outputs, step 4). The hub at an earlier commit of evo-agents.lock gives none, and the module skips; the channel's
@@ -73,43 +75,30 @@ def uploaded(payload: dict) -> list[tuple[str, bytes]]:
     return [(file["name"], file["content"]) for file in payload["files"].values()]
 
 
-def test_a_runs_files_reach_its_owners_chat_as_one_group_with_the_runs_link_and_never_a_tool_image(
-    client,
-    hub,
-    hub_db,
-    bot,  # noqa: F811
-):
-    run_id, prefix = local_run(client, hub)
-    files = [
-        (SHOT, item(SHOT, "settings.png", "image/png", caption="After the fix")),
-        (REPORT, item(REPORT, "report.md", "text/markdown")),
-        (TOOL_SHOT, item(TOOL_SHOT, "browser.png", "image/png", "tool")),
-    ]
-    sent(client, prefix, hub["owner"], files)
-    deliver(client)
-    assert bot.fake.media() == [], "the notice waits its minute for more files"
-
+@pytest.mark.parametrize("blobs", [True, False], ids=["with-the-store", "without-the-store"])
+def test_a_runs_files_stay_on_the_hub_and_reach_no_chat(client, hub, hub_db, bot, blobs):  # noqa: F811
+    _, prefix = local_run(client, hub)
+    sent(
+        client,
+        prefix,
+        hub["owner"],
+        [
+            (SHOT, item(SHOT, "settings.png", "image/png", caption="After the fix")),
+            (REPORT, item(REPORT, "report.md", "text/markdown")),
+            (TOOL_SHOT, item(TOOL_SHOT, "browser.png", "image/png", "tool")),
+        ],
+    )
+    assert deliver(client, blobs=blobs)["failed"] == 0
     due_now(hub_db)
-    assert deliver(client)["failed"] == 0
-    ((method, group),) = bot.fake.media()
-    assert method == "sendMediaGroup" and group["chat_id"] == OWNER_CHAT
-    assert [entry["type"] for entry in group["media"]] == ["document", "document"]  # an image and a report
-    assert uploaded(group) == [("settings.png", SHOT), ("report.md", REPORT)]
-    caption = group["media"][0]["caption"]
-    assert caption.startswith(f"<b>Files from a run</b> in {PROJECT}\nLocal run #{run_id} sent 2 files")
-    assert caption.endswith(f"https://hub.test/p/{PROJECT}/runs/{run_id}")
-    assert "browser.png" not in str(bot.fake.calls), "an image taken out of a tool's result never goes"
-    assert [payload["text"] for payload in bot.fake.sent()][1:] == [], "one group, and no message besides"
-    assert telegram_deliveries(hub_db) == [("delivered", 1, f"{OWNER_CHAT}:{group['message_ids'][0]}", None)]
-
+    assert deliver(client, blobs=blobs)["failed"] == 0
     sent(client, prefix, hub["owner"], [(SHOT[::-1], item(SHOT[::-1], "after.png", "image/png"))])
     due_now(hub_db)
-    deliver(client)
-    method, photo = bot.fake.media()[-1]
-    assert method == "sendPhoto" and uploaded(photo) == [("after.png", SHOT[::-1])]
-    assert photo["reply_markup"]["inline_keyboard"] == [
-        [{"text": "Open on the hub", "url": f"https://hub.test/p/{PROJECT}/runs/{run_id}"}]
-    ]
+    assert deliver(client, blobs=blobs)["failed"] == 0
+    assert bot.fake.media() == [], "a notice that only reports goes to no channel"
+    assert [payload["text"] for payload in bot.fake.sent()][1:] == [], "no message besides the link's"
+    assert telegram_deliveries(hub_db) == []
+    for name in ("settings.png", "report.md", "browser.png", "after.png"):
+        assert name not in str(bot.fake.calls)
 
 
 def test_a_question_with_a_file_sends_the_image_and_then_the_question_as_a_reply_to_it(client, hub, hub_db, bot):  # noqa: F811
@@ -140,7 +129,7 @@ def test_a_question_with_a_file_sends_the_image_and_then_the_question_as_a_reply
 
 def test_a_restricted_projects_chat_gets_neither_files_nor_their_names(client, hub, hub_db, bot):  # noqa: F811
     unrestricted(hub_db, {"level": "customer", "location": "any"})  # at Telegram's level: restricted
-    run_id, prefix = local_run(client, hub)
+    _, prefix = local_run(client, hub)
     (shot,) = sent(client, prefix, hub["owner"], [(SHOT, item(SHOT, "northwind-contract.png", "image/png"))])["outputs"]
     asked = ask_local(client, hub, prefix, [shot["id"]])
     sent(client, prefix, hub["owner"], [(REPORT, item(REPORT, "northwind-terms.md", "text/markdown"))])
@@ -148,20 +137,7 @@ def test_a_restricted_projects_chat_gets_neither_files_nor_their_names(client, h
     assert deliver(client)["failed"] == 0
     assert bot.fake.media() == []
     texts = [payload["text"] for payload in bot.fake.sent()][1:]
-    assert texts == [
+    assert texts == [  # the question alone: the notice of the run's files stays on the hub
         f"<b>{PROJECT}</b>: A decision waits for your answer.\n\nhttps://hub.test/inbox?decision={asked['id']}",
-        f"<b>{PROJECT}</b>: Files from a run.\n\nhttps://hub.test/p/{PROJECT}/runs/{run_id}",
     ]
     assert "northwind" not in str(bot.fake.calls)
-
-
-def test_without_the_store_a_runs_files_go_as_their_notices_text(client, hub, hub_db, bot):  # noqa: F811
-    run_id, prefix = local_run(client, hub)
-    sent(client, prefix, hub["owner"], [(REPORT, item(REPORT, "report.md", "text/markdown"))])
-    due_now(hub_db)
-    assert deliver(client, blobs=False)["failed"] == 0
-    assert bot.fake.media() == []
-    text = bot.fake.sent()[-1]["text"]
-    assert text.startswith(f"<b>Files from a run</b> in {PROJECT}\nLocal run #{run_id} sent report.md") and (
-        "- report.md (" in text
-    )
