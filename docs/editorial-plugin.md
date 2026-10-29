@@ -159,6 +159,7 @@ prints without `--json`.
 
 | Route | What it does |
 | --- | --- |
+| `GET workspace` | ordered stage and notebook display labels, readable by project members |
 | `GET posts?stage=` | the posts in stage order: slug, title, stage, waiting_gate, run, gates (stage, kind, state, answered_at, answered_via), rounds (a count), preview_url, url |
 | `GET posts/{slug}` | one post with its gates (and their `ask`), rounds with comments and the judge's scores, its run, history and feedback ids |
 | `POST posts/{slug}` | set its stage, title, links, `comment_id`, figures, a gate's state (`gate`, `gate_state`, `via`, `answer`) or what is asked at a gate (`ask`); a new slug needs a stage, a post that is there keeps its stage when none is given |
@@ -171,6 +172,28 @@ prints without `--json`.
 | `POST feedback/{entry}/probe` | give the entry its probe (`task`, `verify`) or retire it (`remove`) (admin) |
 | `POST import` | write a JSON document's posts and entries, keeping their ids; a second run adds nothing |
 | `GET export?notebook=&format=` | the notebooks as markdown files, or with `format=json` the document import takes |
+
+## Reading and reviewing in the browser
+
+Posts has a title/slug search, a stage selector using the project's configured titles, and status filters for
+waiting reviews, running writers, failed/refused runs and published links. Counts describe the full visible list;
+search and stage filters narrow that list. A post can appear in more than one status filter.
+
+The post page puts waiting decisions above review rounds. The newest round is open; older rounds are expandable.
+The sidebar keeps writer status, a run link, previous decisions and stage history. The feedback link opens the
+notebook filtered to this post. Readers see the same content without write controls; the existing server gates
+still enforce access, running-writer locks and judge approval.
+
+Feedback has an explicit Apply filters action, keyword search, notebook and stage choices, a post slug filter and
+recurrence choices. Results can be sorted by entry id, date or recurrence, and are shown ten per page. Expand an
+entry to read its full rule, check, original words and corrections. Filtering preserves the controls and ignores
+out-of-order responses. A failed read shows Retry rather than stale results.
+
+`GET workspace` returns only ordered stage and notebook names/titles to readers. It does not expose the repository,
+reviewers, budget, comment-service configuration or instructions. The pages still display raw names if this read
+fails. Styles use the hub's theme tokens and stack on narrow screens.
+
+DOM regression tests: `npm ci --ignore-scripts && npm test` (Node 24). They use fictional data, not a live hub.
 
 ## Command line
 

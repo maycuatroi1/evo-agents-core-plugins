@@ -108,6 +108,18 @@ class EditorialPost(BaseModel):
     updated_at: dt.datetime
 
 
+class EditorialChoice(BaseModel):
+    name: str
+    title: str
+
+
+class EditorialWorkspace(BaseModel):
+    """Display labels only, not the plugin's operational configuration."""
+
+    stages: list[EditorialChoice]
+    notebooks: list[EditorialChoice]
+
+
 class EditorialSetIn(BaseModel):
     """What to change of a post; a post that is not there is made, which needs a stage."""
 

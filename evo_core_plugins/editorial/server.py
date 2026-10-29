@@ -35,6 +35,7 @@ from evo_core_plugins.editorial.models import (
     EditorialProbeIn,
     EditorialRepeatIn,
     EditorialSetIn,
+    EditorialWorkspace,
 )
 from evo_core_plugins.editorial.tables import NAME, SLUG
 
@@ -75,6 +76,20 @@ async def _answer(request: Request, work):
 def _action(action: str | None, wanted: str, hint: str) -> None:
     if action is not None and action != wanted:
         raise hub.Refused(422, hint)
+
+
+@router.get("/{project}/workspace", response_model=EditorialWorkspace)
+async def workspace(request: Request, project: ProjectName, user: hub.Caller, sink: Sink = None):
+    """The configured stage order and notebook labels for the reader's filters."""
+
+    async def work(conn):
+        who = await service.viewer(conn, user, project, sink)
+        return EditorialWorkspace(
+            stages=[{"name": item.name, "title": item.title} for item in who.cfg.stages],
+            notebooks=[{"name": item.name, "title": item.title} for item in who.cfg.notebooks],
+        )
+
+    return await _answer(request, work)
 
 
 @router.get("/{project}/posts", response_model=list[EditorialPostSummary])
