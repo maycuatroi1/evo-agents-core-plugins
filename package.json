@@ -1,0 +1,10 @@
+{
+  "name": "evo-core-plugin-ui-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test plugin_tests/ui/*.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.1"
+  }
+}

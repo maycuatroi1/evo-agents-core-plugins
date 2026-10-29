@@ -79,9 +79,15 @@ versions.
 | 2.4.0 | 1.6 | `64207689e8a3ed6709c873f5d7d94f01365c9f77` (pull request #297, plan jev-decisions) |
 | 2.4.1 | 1.6 | the same |
 | 2.5.0 | 1.7 | `105882621becad32331d60b86a151a034c1a6406` (pull request #314) |
+| 2.6.0 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` |
 | 2.5.1 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` (pull request #327, plan kg-retrieval-quality) |
 
 ### Releases
+
+- **2.6.0**: editorial 1.2.0 adds searchable, status-filtered posts, a review-first post detail and a paginated
+  feedback notebook with expandable evidence. Stage and notebook titles come from a reader-safe `workspace`
+  route. The pages use the hub theme, resize their frames as content expands or shrinks, and retain the existing
+  gate permissions and write payloads. API 1.7, no migration. UI regression tests run with `npm test` (Node 24).
 
 - **2.5.1**: the tests of `telegram` follow evo-agents 0.51, whose push, merge, plan_finished and run_outputs notices only
   report: a run's files stay on the hub. No plugin changes.

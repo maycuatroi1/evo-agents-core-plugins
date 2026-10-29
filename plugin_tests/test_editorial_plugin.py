@@ -182,7 +182,7 @@ def project_id(db) -> int:
 def test_editorial_manifest_runs_no_job_and_asks_for_api_1_4():
     found = manifest()
     contributes = found["contributes"]
-    assert not contributes.get("jobs") and found["permissions"] == [] and found["version"] == "1.1.0"
+    assert not contributes.get("jobs") and found["permissions"] == [] and found["version"] == "1.2.0"
     assert [p["name"] for p in contributes["pages"]] == ["posts", "feedback"]
     assert [t["name"] for t in contributes["mcp_tools"]] == ["state", "recall", "feedback", "comments"]
     types = {t["name"]: t for t in contributes["agent_types"]}
@@ -422,3 +422,20 @@ def test_editorial_pages_read_at_a_narrow_screen():
         html = (pages / f"{name}.html").read_text(encoding="utf-8")
         assert 'name="viewport" content="width=device-width, initial-scale=1"' in html and f"{name}.js" in html
     assert (pages / "i18n" / "en.js").exists() and (pages / "i18n" / "vi.js").exists()
+
+
+def test_workspace_labels_are_reader_safe_and_follow_configuration(client, editorial, github):
+    result = ok(client.get(f"{BASE}/workspace", headers=editorial["eve"]))
+    assert result == {
+        "stages": [{"name": item["name"], "title": item["title"]} for item in CONFIG["stages"]],
+        "notebooks": [{"name": item["name"], "title": item["title"]} for item in CONFIG["notebooks"]],
+    }
+    assert client.get(f"{BASE}/workspace").status_code == 401
+    assert ok(client.get(f"{BASE}/workspace", headers=editorial["outsider"])) == result
+    visitor = live.sign_in(client, github, "visitor", 690)["token"]
+    response = client.get(f"{BASE}/workspace", headers={"Authorization": "Bearer " + visitor})
+    assert response.status_code in (403, 404)
+
+
+def test_workspace_is_unavailable_when_editorial_is_not_enabled(client, members):
+    assert client.get(f"{BASE}/workspace", headers=members["eve"]).status_code == 404

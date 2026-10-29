@@ -10,7 +10,7 @@ which every plugin of one release shares.
 Nothing here imports another plugin's package: ``PLUGINS`` names them for the checks and the command alone.
 """
 
-__version__ = "2.5.1"
+__version__ = "2.6.0"
 
 PLUGINS = (
     "telegram",
