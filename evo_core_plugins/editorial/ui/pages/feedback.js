@@ -19,14 +19,11 @@
     expandAll = false,
     pending = false;
   function query() {
-    return Object.keys(filters)
-      .filter(function (key) {
-        return filters[key];
-      })
-      .map(function (key) {
-        return key + "=" + encodeURIComponent(filters[key]);
-      })
-      .join("&");
+    var values = {};
+    Object.keys(filters).forEach(function (key) {
+      if (filters[key]) values[key] = filters[key];
+    });
+    return values;
   }
   function line(label, value) {
     return value
@@ -167,7 +164,7 @@
     status.textContent = t("workspace.loading");
     // Do not let stale results look like the newly applied filters while a request is in flight.
     page.fill(output, ui.loading());
-    return page.call("feedback" + (query() ? "?" + query() : "")).then(
+    return page.call("feedback", { query: query() }).then(
       function (found) {
         if (token !== loading) return;
         pending = false;

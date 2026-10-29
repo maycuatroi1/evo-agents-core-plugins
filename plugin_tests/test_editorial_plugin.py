@@ -182,7 +182,7 @@ def project_id(db) -> int:
 def test_editorial_manifest_runs_no_job_and_asks_for_api_1_4():
     found = manifest()
     contributes = found["contributes"]
-    assert not contributes.get("jobs") and found["permissions"] == [] and found["version"] == "1.2.0"
+    assert not contributes.get("jobs") and found["permissions"] == [] and found["version"] == "1.2.1"
     assert [p["name"] for p in contributes["pages"]] == ["posts", "feedback"]
     assert [t["name"] for t in contributes["mcp_tools"]] == ["state", "recall", "feedback", "comments"]
     types = {t["name"]: t for t in contributes["agent_types"]}

@@ -43,6 +43,9 @@ async function boot(
     },
     route(url, options) {
       calls.push({ url, options });
+      // Match the hub bridge contract: route paths cannot contain query strings or fragments.
+      if (/[?#]/.test(url))
+        return Promise.reject(new Error("route query belongs in options.query"));
       const value = route ? route(url, options) : undefined;
       if (value !== undefined) return Promise.resolve(value);
       return Promise.resolve({
@@ -126,7 +129,11 @@ test("feedback is paginated, searchable, sorted and keyboard-expandable without 
   b.find("editorial-filter-notebook").value = "facts";
   b.doc.querySelector("form").dispatchEvent(new b.window.Event("submit", { cancelable: true }));
   await tick();
-  assert.equal(b.calls.at(-1).url, "feedback?q=ngu%E1%BB%93n%20%26%20date&notebook=facts");
+  assert.equal(b.calls.at(-1).url, "feedback");
+  assert.deepEqual(JSON.parse(JSON.stringify(b.calls.at(-1).options.query)), {
+    q: "nguồn & date",
+    notebook: "facts",
+  });
   assert.equal(b.find("editorial-filter-q"), q);
   [...b.doc.querySelectorAll("button")].find((n) => n.textContent === "Expand entries").click();
   assert.equal(b.doc.querySelectorAll("details[open]").length, 10);
@@ -138,7 +145,10 @@ test("feedback deep link, reset, empty and failed reads preserve the toolbar", a
     location: { query: { post: "northwind-retries" } },
     route: (url) => (url.startsWith("feedback") ? { status: 200, body: [] } : undefined),
   });
-  assert.equal(b.calls.at(-1).url, "feedback?post=northwind-retries");
+  assert.equal(b.calls.at(-1).url, "feedback");
+  assert.deepEqual(JSON.parse(JSON.stringify(b.calls.at(-1).options.query)), {
+    post: "northwind-retries",
+  });
   assert.ok(b.find("editorial-empty"));
   [...b.doc.querySelectorAll("button")].find((n) => n.textContent === "Clear filters").click();
   await tick();
