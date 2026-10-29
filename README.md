@@ -84,6 +84,10 @@ versions.
 
 ### Releases
 
+- **2.6.1**: editorial 1.2.1 sends notebook filters through the bridge's `query` field, not inside its route path.
+  This fixes filtered reads and post-to-feedback links. DOM tests now reject query strings in route paths like
+  the actual host bridge. API 1.7, no migration.
+
 - **2.6.0**: editorial 1.2.0 adds searchable, status-filtered posts, a review-first post detail and a paginated
   feedback notebook with expandable evidence. Stage and notebook titles come from a reader-safe `workspace`
   route. The pages use the hub theme, resize their frames as content expands or shrinks, and retain the existing
