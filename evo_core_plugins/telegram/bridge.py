@@ -24,8 +24,9 @@ check) go with it: a photo within 10 MB with sendPhoto, any file within 50 MB wi
 message, or the first of them with its author as the caption when the message is files alone; a larger file stays on
 the hub, named in the message with a link to it there. One try of the event uploads at most MAX_MEDIA_BYTES after its
 first file, so that it ends within the hub's 30 seconds; the rest go on the next try. At most 20 messages a minute go
-to one group (``bridge_model.Pace``): a message that would wait longer than MAX_WAIT_SECONDS fails its try, and the
-hub sends the event again later. A 429 fails it the same way.
+to one group (``bridge_model.Pace``): a message that would wait longer than MAX_WAIT_SECONDS fails its try with
+``Later``, whose ``retry_after`` tells the hub when the pace lets it go, and the hub sends the event again then. A 429
+fails it the same way with Telegram's retry_after, and files left for the next try with 1 second.
 
 While a run that a message of the group started is at work (``bridge_model.TYPING_STATES``), the bot shows as typing
 in the group: sendChatAction every TYPING_SECONDS, from a loop of the process that took the run's progress, until no
@@ -314,13 +315,19 @@ async def member_changed(updates: server.Updates, change: dict) -> str:
 
 
 class Later(Exception):  # noqa: N818 (a try of the event that waits for the group, not an error of the hub)
-    """The group's pace or Telegram's 429 holds the message: the event's try fails, and the hub tries it again."""
+    """The group's pace or Telegram's 429 holds the message: the event's try fails, and the hub tries it again after
+    ``retry_after`` seconds (a hub that serves 1.7 from evo-agents' plan events-out-in-seconds reads it; an older one
+    waits its own backoff)."""
+
+    def __init__(self, message: str, retry_after: float):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 async def _paced(chat_id: int) -> None:
     wait = PACE.wait(chat_id)
     if wait > MAX_WAIT_SECONDS:
-        raise Later(f"the group's pace holds the message for {wait:.0f}s")
+        raise Later(f"the group's pace holds the message for {wait:.0f}s", wait)
     if wait > 0:
         await server.pause(wait)
 
@@ -351,7 +358,8 @@ async def _send(
                 chat_id = exc.migrate_to
                 continue
             if exc.code == 429:
-                raise Later(f"Telegram asked to wait {exc.retry_after or 0:.0f}s") from None
+                wait = exc.retry_after or MAX_WAIT_SECONDS
+                raise Later(f"Telegram asked to wait {wait:.0f}s", wait) from None
             if server._gone(exc):
                 async with hub.transaction(context) as conn:
                     await hub.bridge_unlink(conn, plugin(), bridge.id, by="bot")
@@ -475,7 +483,7 @@ async def _carry(
         going = [found for found in going if found.id in pending]
     for index, found in enumerate(going):
         if uploaded and uploaded + found.size > telegram.MAX_MEDIA_BYTES:
-            raise Later("the files of the message go on the next try, within the hub's time for one")
+            raise Later("the files of the message go on the next try, within the hub's time for one", 1.0)
         await _upload(context, bot, bridge, message_id, found, None, head)
         uploaded += found.size
         async with hub.transaction(context) as conn:

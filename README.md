@@ -84,6 +84,11 @@ versions.
 
 ### Releases
 
+- **2.6.3**: telegram 1.1.2 tells the hub how long a held message waits: the bridge's `Later` carries
+  `retry_after`, the pace's wait when a group has had its 20 messages a minute, Telegram's `retry_after` on a 429,
+  1 second when files are left for the next try. A hub of evo-agents pull request #569 (plan events-out-in-seconds)
+  tries the event again then instead of after its minute of backoff; an older hub ignores it. API 1.7, no migration.
+
 - **2.6.2**: telegram 1.1.1 shows the bot as typing in a bridged group while a run that the group started is
   picked up or working (sendChatAction every 4 seconds, at most 30 minutes a run). API 1.7, no migration.
 
