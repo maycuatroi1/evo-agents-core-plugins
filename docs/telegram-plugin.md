@@ -89,7 +89,9 @@ Every new message of the chat goes out, except the ones that came from the group
   the message names it and links to the message there. One delivery uploads at most 20 MB after its first file, so it
   ends within the hub's 30 seconds. The rest go on the next delivery.
 - A chat run started by a message from the group shows its progress as one message, sent as a reply and then edited
-  (`Run #N: picked up`, then `working`, then `done`).
+  (`Run #N: picked up`, then `working`, then `done`). While the run is picked up or working, the group shows the bot
+  as typing (`sendChatAction` every 4 seconds), for at most 30 minutes a run. The typing is not a message and does not
+  count toward the 20 messages a minute.
 - ✅ and ❌ that the chat's agent puts on a message the bridge carried become the bot's 👍 and 👎 reactions in the
   group. Telegram's list of reactions has neither ✅ nor ❌. A person's reaction on the hub stays on the hub.
 - A group gets at most 20 messages a minute. A message that would go past that waits, and the hub delivers it again

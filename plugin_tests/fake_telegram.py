@@ -94,7 +94,7 @@ class FakeTelegram:
                     sent.append({"message_id": self.message_id, "chat": {"id": payload.get("chat_id")}})
                 payload["message_ids"] = [message["message_id"] for message in sent]
                 return 200, ok(sent)
-            if method in ("answerCallbackQuery", "editMessageText", "setMessageReaction"):
+            if method in ("answerCallbackQuery", "editMessageText", "setMessageReaction", "sendChatAction"):
                 return 200, ok(True)
             if method == "getFile":
                 found = self.files.get(payload.get("file_id"))
