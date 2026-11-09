@@ -95,7 +95,10 @@ Every new message of the chat goes out, except the ones that came from the group
 - ✅ and ❌ that the chat's agent puts on a message the bridge carried become the bot's 👍 and 👎 reactions in the
   group. Telegram's list of reactions has neither ✅ nor ❌. A person's reaction on the hub stays on the hub.
 - A group gets at most 20 messages a minute. A message that would go past that waits, and the hub delivers it again
-  later, in order.
+  later, in order. The bridge tells the hub how long (`retry_after` of the exception `Later`, from 2.6.3): the
+  pace's wait, Telegram's `retry_after` on a 429, or 1 second when a message's files go on the next try. A hub that
+  reads it (evo-agents pull request #569) sends the event again within seconds; an older hub waits its own backoff,
+  a minute and more.
 
 ## What the people in a group should know
 

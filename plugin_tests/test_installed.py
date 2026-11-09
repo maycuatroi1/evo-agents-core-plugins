@@ -24,7 +24,7 @@ from plugin_tests import conftest
 OWN_VERSIONS = {
     "jev": "1.4.0",
     "editorial": "1.2.1",
-    "telegram": "1.1.1",
+    "telegram": "1.1.2",
 }  # a plugin added after evo-ak, or changed since, keeps its own manifest version, which its tests pin
 MANIFEST_VERSION = "1.1.0"  # up from evo-ak's 1.0.0, so the hub's store records a new version of the image's plugins
 

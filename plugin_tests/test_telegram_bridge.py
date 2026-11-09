@@ -11,6 +11,7 @@ bot's reaction, a person's stays on the hub; and a group gets at most 20 message
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 from functools import partial
 from types import SimpleNamespace
@@ -518,6 +519,26 @@ def test_a_group_gets_at_most_twenty_messages_a_minute_and_the_rest_later(bridge
     deliver_events(client)
     out = [payload["text"] for payload in to_group(fake) if payload["text"] != bridge.LINKED]
     assert out == [f"<b>{OWNER}</b>\nline {index}" for index in range(25)]
+
+
+def test_a_message_held_tells_the_hub_how_long_it_waits(pace, monkeypatch):
+    """``Later`` carries ``retry_after``: the pace's wait, Telegram's on a 429, which a hub that reads it waits
+    instead of its minute of backoff."""
+    for _ in range(bridge_model.GROUP_MESSAGES):
+        bridge.PACE.took(GROUP)
+    with pytest.raises(bridge.Later) as held:
+        asyncio.run(bridge._paced(GROUP))
+    assert held.value.retry_after == pytest.approx(bridge.PACE.wait(GROUP))
+    assert bridge.MAX_WAIT_SECONDS < held.value.retry_after <= bridge_model.GROUP_SECONDS
+
+    class Refusing:
+        async def call(self, method, **params):
+            raise server.BotApiError(429, "Too Many Requests: retry after 7", retry_after=7)
+
+    group = SimpleNamespace(id="b1", external_id=str(NEW_GROUP))
+    with pytest.raises(bridge.Later) as held:
+        asyncio.run(bridge._send(SimpleNamespace(), Refusing(), group, "sendMessage", text="hi"))
+    assert held.value.retry_after == 7
 
 
 # The pace and the model
