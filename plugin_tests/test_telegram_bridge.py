@@ -64,10 +64,20 @@ def web_client(hub_db, tmp_path, github, bot, s3):  # noqa: F811
 
 @pytest.fixture
 def pace(monkeypatch) -> SimpleNamespace:
-    """The groups' pace on a clock the test moves."""
-    now = SimpleNamespace(value=1000.0)
+    """The groups' pace and the typing deadlines on clocks the test moves, and the typing loops the bridge starts
+    recorded (``typing``, the bridges they were for) instead of run."""
+    now = SimpleNamespace(value=1000.0, wall=1_800_000_000.0, typing=[])
     monkeypatch.setattr(bridge, "clock", lambda: now.value)
     monkeypatch.setattr(bridge, "PACE", bridge_model.Pace(lambda: now.value))
+    monkeypatch.setattr(bridge, "wall", lambda: now.wall)
+    monkeypatch.setattr(bridge, "_typing_loops", {})
+
+    def spawn(coroutine):
+        now.typing.append(coroutine.cr_frame.f_locals["bridge_id"])
+        coroutine.close()
+        return SimpleNamespace(done=lambda: False)
+
+    monkeypatch.setattr(bridge, "_spawn", spawn)
     return now
 
 
@@ -437,6 +447,59 @@ def test_a_runs_progress_is_one_message_edited_and_the_agents_check_is_a_reactio
     }
     (reacted,) = to_group(fake, method="setMessageReaction")  # neither the 👀 nor a person's ❌ goes out
     assert reacted["message_id"] == first and reacted["reaction"] == [{"type": "emoji", "emoji": "\U0001f44d"}]
+
+
+def test_a_run_at_work_shows_the_bot_typing_in_the_group_until_it_ends_or_its_time_runs_out(bridged, pace):
+    from evo_agents.hub.plugin_calls import CoreContext
+
+    client, db, fake, chat = bridged.client, bridged.db, bridged.fake, bridged.chat
+    in_group(client, f"@{BOT} run the checks")
+    m, b, p = tables.chat_messages, tables.chat_bridges, tables.projects
+    ((started,),) = sql(db, select(m.c.id).where(m.c.chat_id == chat["id"], m.c.via == "telegram"))
+    ((bridge_id,),) = sql(db, select(b.c.id))
+    ((project_id,),) = sql(db, select(p.c.id).where(p.c.name == PROJECT))
+    context = CoreContext("telegram", client.app.state.engine, None, PROJECT, project_id)
+    bot = server.BotApi.from_settings(server.settings())
+
+    def moved(run_id: int, state: str) -> None:
+        async def emit(conn):
+            return await chat_bridge_events.progress(conn, chat["id"], started, run_id, state)
+
+        assert on_hub(client, emit) == 1
+        deliver_events(client)
+
+    def typed() -> bool:
+        return client.portal.call(partial(bridge.type_once, context, bot, bridge_id))
+
+    def at_work() -> list[str]:
+        ((state,),) = sql(db, select(b.c.state).where(b.c.id == bridge_id))
+        return bridge_model.at_work(state, pace.wall)
+
+    moved(41, "queued")
+    assert (pace.typing, at_work(), typed()) == ([], [], False)
+    moved(41, "leased")
+    moved(41, "running")
+    assert pace.typing == [bridge_id] and at_work() == ["41"], "one loop, started once"
+    assert typed() is True
+    (action,) = to_group(fake, method="sendChatAction")
+    assert action["action"] == "typing"
+    moved(41, "done")
+    assert (at_work(), typed()) == ([], False)
+    # a run that never says it ended stops showing it once TYPING_FOR_SECONDS passed
+    moved(42, "running")
+    assert typed() is True
+    pace.wall += bridge.TYPING_FOR_SECONDS + 1
+    assert typed() is False
+    assert len(to_group(fake, method="sendChatAction")) == 2
+
+
+def test_the_typing_state_keeps_the_runs_at_work_and_drops_those_whose_time_ran_out():
+    state = bridge_model.typing({"runs": {"7": 1}}, 41, 100.0, now=10.0)
+    assert state == {"runs": {"7": 1}, "typing": {"41": 100.0}}
+    state = bridge_model.typing(state, 42, 50.0, now=10.0)
+    assert bridge_model.at_work(state, 10.0) == ["41", "42"] and bridge_model.at_work(state, 60.0) == ["41"]
+    assert bridge_model.typing(state, 41, None, now=60.0) == {"runs": {"7": 1}}
+    assert bridge_model.at_work({"typing": "garbled"}, 0.0) == []
 
 
 def test_a_group_gets_at_most_twenty_messages_a_minute_and_the_rest_later(bridged, pace):

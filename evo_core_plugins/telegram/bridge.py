@@ -27,15 +27,22 @@ first file, so that it ends within the hub's 30 seconds; the rest go on the next
 to one group (``bridge_model.Pace``): a message that would wait longer than MAX_WAIT_SECONDS fails its try, and the
 hub sends the event again later. A 429 fails it the same way.
 
+While a run that a message of the group started is at work (``bridge_model.TYPING_STATES``), the bot shows as typing
+in the group: sendChatAction every TYPING_SECONDS, from a loop of the process that took the run's progress, until no
+run of the bridge is at work or TYPING_FOR_SECONDS passed for each.
+
 The bridge keeps in its state (``hub.bridge_set_state``) the group's message of each of the last hub messages it
 carried (``ids``), the files of a message still to go (``files``), the progress message of each of the last runs
-(``runs``), the chat's agent once it spoke (``agent``) and the senders told how to link (``told``).
+(``runs``), the runs at work and until when (``typing``), the chat's agent once it spoke (``agent``) and the senders
+told how to link (``told``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import Coroutine
 from typing import Any
 
 from evo_agents.hub.server import core_plugin_api as hub
@@ -47,6 +54,8 @@ from . import server
 log = logging.getLogger(__name__)
 
 MAX_WAIT_SECONDS = 5.0  # how long a message waits for the group's pace within one try of its event
+TYPING_SECONDS = 4.0  # Telegram shows a chat action for 5 s at most: the bot says it again within that
+TYPING_FOR_SECONDS = 30 * 60.0  # the longest one run shows the bot typing, the hub's time cap of a chat run's turn
 GONE_STATES = frozenset({"left", "kicked"})
 ADMIN_STATES = frozenset({"creator", "administrator"})
 LINKED = (
@@ -67,6 +76,13 @@ TOO_LARGE = "That file is larger than a bot may fetch from Telegram (20 MB): put
 
 clock = time.monotonic  # what the pace reads; tests move it instead of waiting
 PACE = model.Pace(lambda: clock())
+wall = time.time  # what the typing deadlines in a bridge's state are read against, the same in every process
+_typing_loops: dict[int, asyncio.Task] = {}  # the loop of this process that shows the bot typing, by bridge
+
+
+def _spawn(coroutine: Coroutine) -> asyncio.Task:
+    """Run ``coroutine`` beside the event that started it; tests take it instead."""
+    return asyncio.get_running_loop().create_task(coroutine)
 
 
 def plugin() -> hub.Plugin:
@@ -470,8 +486,54 @@ async def _carry(
             await _keep(conn, bridge, model.pending_files(fresh.state, message_id, rest))
 
 
+async def _typing(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, run_id: int, state: str) -> None:
+    """Keep run ``run_id`` in the bridge's state as at work (``model.typing``) while ``state`` is one of
+    ``model.TYPING_STATES``, out of it otherwise; with a run at work, start the loop of this process that shows the bot
+    typing in the group, unless it runs already."""
+    until = wall() + TYPING_FOR_SECONDS if state in model.TYPING_STATES else None
+    async with hub.transaction(context) as conn:
+        fresh = await hub.bridge_read(conn, plugin(), bridge.id)
+        if fresh is None:
+            return
+        kept = model.typing(fresh.state, run_id, until, wall())
+        if kept != dict(fresh.state):
+            await _keep(conn, bridge, kept)
+    running = _typing_loops.get(bridge.id)
+    if model.at_work(kept, wall()) and (running is None or running.done()):
+        _typing_loops[bridge.id] = _spawn(_type_while_at_work(context, bot, bridge.id))
+
+
+async def type_once(context: hub.Context, bot: server.BotApi, bridge_id: int) -> bool:
+    """Show the bot typing in the bridge's group (sendChatAction) when its state keeps a run at work; whether it did.
+    A refusal of Telegram stops it: the group gone, a 429, a chat that takes no action."""
+    async with hub.transaction(context) as conn:
+        found = await hub.bridge_read(conn, plugin(), bridge_id)
+    if found is None or not model.at_work(found.state, wall()):
+        return False
+    try:
+        await bot.call("sendChatAction", chat_id=int(found.external_id), action="typing")
+    except server.BotApiError as exc:
+        log.info("telegram typing stopped", extra={"bridge": bridge_id, "code": exc.code})
+        return False
+    return True
+
+
+async def _type_while_at_work(context: hub.Context, bot: server.BotApi, bridge_id: int) -> None:
+    """``type_once`` every TYPING_SECONDS while it shows the bot typing. Any process of the hub may run one for the
+    bridge, since each reads the runs at work from the bridge's state; the loop ends with the last of them."""
+    try:
+        while await type_once(context, bot, bridge_id):
+            await server.pause(TYPING_SECONDS)
+    except Exception as exc:  # the typing is a courtesy: what failed it never reaches the event
+        log.warning("telegram typing failed", extra={"bridge": bridge_id, "error": type(exc).__name__})
+    finally:
+        if _typing_loops.get(bridge_id) is asyncio.current_task():
+            del _typing_loops[bridge_id]
+
+
 async def _progress(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, payload: dict) -> None:
     run_id, state = payload["run_id"], str(payload.get("state") or "")
+    await _typing(context, bot, bridge, run_id, state)
     text = model.progress_text(run_id, state)
     shown = (bridge.state.get("runs") or {}).get(str(run_id))
     if isinstance(shown, int):

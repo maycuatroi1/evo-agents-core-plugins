@@ -9,7 +9,8 @@ Telegram has no tables), inline code ``<code>``, ``**bold**`` and a heading ``<b
 rest escaped. A message cut to fit ends with a link to it on the hub, kept whole. The files attached to it go as
 what ``file_method`` names: a JPEG, PNG or WebP within MAX_PHOTO_BYTES as a photo, any file within
 MAX_DOCUMENT_BYTES as a document; a larger one stays on the hub, named in the message with a link to it
-(``outbound``, ``caption``). A run's progress is one line (``progress_text``) that the bridge edits as the run moves.
+(``outbound``, ``caption``). A run's progress is one line (``progress_text``) that the bridge edits as the run moves,
+and while its agent is at work (TYPING_STATES) the bot shows as typing in the group (``typing``, ``at_work``).
 Of the reactions of the hub only the agent's ✅ and ❌ go out (REACTIONS); a bot's reaction is one of the emoji
 Telegram allows, and that list has neither, so they go as 👍 and 👎.
 
@@ -37,6 +38,7 @@ CHECK, CROSS = "✅", "❌"  # the hub's reactions of a run that ended (evo_agen
 REACTIONS = {CHECK: "\U0001f44d", CROSS: "\U0001f44e"}  # what the agent's reaction is in the group
 KEEP_IDS = 200  # the hub's messages whose group message the bridge remembers (reactions, progress, dedup)
 KEEP_RUNS = 30  # the runs whose progress message it remembers
+TYPING_STATES = frozenset({"leased", "running", "interactive"})  # a run whose agent is at work: the bot shows typing
 KEEP_TOLD = 200  # the senders it told how to link
 CUT_TAIL = '\n\n<a href="{url}">Read the rest on the hub</a>'
 FILES_ON_HUB = "(a file, on the hub)"
@@ -216,6 +218,26 @@ def plain(text: str) -> str:
 def progress_text(run_id: int, state: str) -> str:
     word = PROGRESS_WORDS.get(state, state)
     return f"Run #{run_id}: {telegram.escape(word)}"
+
+
+def at_work(state: Mapping, now: float) -> list[str]:
+    """The runs the bridge's ``state`` keeps at work (``typing``: run id to the time it stops showing, epoch
+    seconds), whose time has not run out at ``now``."""
+    kept = state.get("typing")
+    if not isinstance(kept, Mapping):
+        return []
+    return [run for run, until in kept.items() if isinstance(until, (int, float)) and until > now]
+
+
+def typing(state: Mapping, run_id: int, until: float | None, now: float) -> dict:
+    """``state`` with run ``run_id`` at work until ``until`` in ``typing``, or out of it when ``until`` is None; the
+    runs whose time ran out at ``now`` are left out, and the key itself once it holds none."""
+    kept = state.get("typing") if isinstance(state.get("typing"), Mapping) else {}
+    runs = {run: kept[run] for run in at_work(state, now) if run != str(run_id)}
+    if until is not None:
+        runs[str(run_id)] = until
+    found = {key: value for key, value in state.items() if key != "typing"}
+    return {**found, "typing": dict(list(runs.items())[-KEEP_RUNS:])} if runs else found
 
 
 def reaction(emoji: str) -> str | None:

@@ -84,6 +84,9 @@ versions.
 
 ### Releases
 
+- **2.6.2**: telegram 1.1.1 shows the bot as typing in a bridged group while a run that the group started is
+  picked up or working (sendChatAction every 4 seconds, at most 30 minutes a run). API 1.7, no migration.
+
 - **2.6.1**: editorial 1.2.1 sends notebook filters through the bridge's `query` field, not inside its route path.
   This fixes filtered reads and post-to-feedback links. DOM tests now reject query strings in route paths like
   the actual host bridge. API 1.7, no migration.
