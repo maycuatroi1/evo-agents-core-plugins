@@ -5,11 +5,16 @@ tests/hub/test_chats_kg_source.py, with its helpers from the checkout of evo-age
 Checked here, on Postgres with the api and the worker in this process and moto's blob store (``tests.hub.test_kg``):
 the items, labels, threads and chats the source gives for a chat of one project and one of two, where the message
 goes into the graph of each with a grant on the other in its audience; a message sent while the chat had no agent is
-in no graph; a thread and a chat carry the join of their messages; a new message queues a build, which the next joins,
-and a build of unchanged chats gives the same content hash; kg_status names the newest message read. On the graph the
-worker built: a member with a grant on the project in no chat sees none of it, one who joined after the agent of the
-other project left sees what was said since and not the thread it went into, one taken out of the chat loses it at the
-next read with no build, and the edge from what a message mentions shows only to who reads the message.
+in no graph; a thread and a chat carry the join of their messages; a new message queues a build, which the next joins;
+kg_status names the newest message read. The build keeps the graph in the hub's Postgres (``kg_graph_heads`` and the
+graph tables, ``evo_agents.hub.kg_graph_rows``) and writes no graph file: the rows read back hash as the build and hold
+what a build in memory of the worker's corpus gives (``evo_agents.kg.build.build_rows``), and a build of unchanged
+chats, by the hub or in memory, gives the same content hash. On the graph the worker built: a member with a grant on the
+project in no chat sees none of it, one who joined after the agent of the other project left sees what was said since
+and not the thread it went into, one taken out of the chat loses it at the next read with no build, and the edge from
+what a message mentions shows only to who reads the message; the snapshot the api reads it from
+(``evo_agents.hub.kg_snapshots.SnapshotCoordinator``) gives a reader in no chat none of its messages and a member those
+of their chats.
 
 Projects alpha and beta enable the plugin and grant it chats:read. Chat one (Kiwi rollout) is alice's with dave and the
 agents of both; m1 is said there, the agent of beta leaves, bob joins, and dave answers m1 with m2. Chat two (Mango) has
@@ -34,11 +39,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from evo_agents.hub import kg_sources, plugin_calls, tables
+from evo_agents.hub import kg_graph_rows, kg_snapshots, kg_sources, plugin_calls, tables
 from evo_agents.hub.kg_build import worker_project
 from evo_agents.hub.server import chat_graph  # the label rule of chats, which the plugin asks the hub for
 from evo_agents.hub.server.chat_access import LabelProject
-from evo_agents.kg.build import build_project
+from evo_agents.kg.build import build_rows, verify_rows
+from evo_agents.kg.snapshot_search import SnapshotSearch
 from evo_agents.plugins import core
 from evo_agents.plugins.core import ENTRY_POINT_GROUP
 from evo_core_plugins.chats import kg as chats_kg
@@ -48,7 +54,6 @@ from tests.hub.test_kg import (
     PROJECT,
     REGISTRATION,
     Machine,
-    build_rows,
     call_tool,
     doc,
     grant,
@@ -58,11 +63,13 @@ from tests.hub.test_kg import (
     run_jobs,
     tool_ok,
 )
+from tests.hub.test_kg import build_rows as builds  # the build rows of alpha, newest first, through the api
 
 A, B = PROJECT, "beta"
 SOURCE = "plugin.chats"
 CHATS = EntryPoint("chats", "evo_core_plugins.chats:manifest", ENTRY_POINT_GROUP)
 RUNBOOK = "docs:doc:runbook"
+INTERNAL = (1, 0)  # the clearance (level, location) of a reader of internal, the label of every item here
 GRANTS = {  # login: [(project, role, max level)], beside those of tests.hub.test_kg.open_hub
     "alice": [(B, "writer", "internal")],  # made every chat and is in each
     "dave": [(B, "reader", "internal")],  # in every chat, until he is taken out of chat one
@@ -160,6 +167,35 @@ def source_items(hub, project: str) -> SimpleNamespace:
 
     (found,) = [source for source in asyncio.run(read()) if source.id == SOURCE]
     return SimpleNamespace(items={item["id"]: item for item in found.items}, cursor=found.cursor)
+
+
+def make_engine(db):
+    return create_async_engine(db.dsn.replace("postgresql://", "postgresql+psycopg://", 1), poolclass=NullPool)
+
+
+def project_id(hub, project: str = A) -> int:
+    projects = tables.projects
+    return query(hub.db, select(projects.c.id).where(projects.c.name == project))[0][0]
+
+
+def kept_graph(hub, project: str = A):
+    """The rows of ``project``'s graph as the hub's tables keep them (``kg_graph_rows.read_graph``)."""
+
+    async def read():
+        engine = make_engine(hub.db)
+        try:
+            async with engine.connect() as conn:
+                return await kg_graph_rows.read_graph(conn, project_id(hub, project))
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def head(hub, project: str = A) -> list[tuple]:
+    heads = tables.kg_graph_heads
+    found = select(heads.c.build_id, heads.c.content_hash).where(heads.c.project_id == project_id(hub, project))
+    return query(hub.db, found)
 
 
 def queued(hub) -> int:
@@ -279,13 +315,13 @@ def test_chats_kg_sources_takes_a_cursor_of_the_sources_own_item_and_a_time():
 # Building
 
 
-def test_chats_a_new_message_queues_a_build_and_unchanged_chats_build_the_same_hash(hub):
+def test_chats_a_new_message_queues_a_build_whose_graph_the_hub_keeps_in_its_tables(hub):
     assert queued(hub) == 0
     said = converse(hub)
     assert queued(hub) == 2  # one build of alpha, which every later message joined, and one of beta (m1)
     run_jobs(hub.db, hub.s3, hub.worker_dir)
-    built = build_rows(hub)[0]
-    assert built["status"] == "succeeded"
+    built = builds(hub)[0]
+    assert built["status"] == "succeeded" and built["graph_kept"]
     assert built["nodes"] is None and built["edges"] is None  # totals counting chats would tell erin they exist
     assert node(hub, message(said.m3))["kind"] == "ChatMessage"
     assert node(hub, message(said.m1), project=B)["label"]["audience"] == [f"chat:{said.one}", f"grant:{A}:internal"]
@@ -293,16 +329,49 @@ def test_chats_a_new_message_queues_a_build_and_unchanged_chats_build_the_same_h
     status = tool_ok(hub, "kg_status")
     assert f"read {message(said.m3)} at " in status["content"][0]["text"]  # the newest message the build read
 
-    done(hub.client.post(f"/v1/kg/{A}/builds", headers=hub.alice), 202)  # nothing changed since
-    run_jobs(hub.db, hub.s3, hub.worker_dir)
-    same = build_rows(hub)[0]
-    assert same["id"] != built["id"] and same["content_hash"] == built["content_hash"]
-    assert same["artifact_reused_from"] == built["id"]
-    checked = build_project(worker_project(hub.worker_dir, A), verify=True)
-    assert checked.ok and checked.verify["match"] and checked.content_hash == built["content_hash"]
+    # the graph is in the hub's Postgres, under the head of the build, and in no file of the worker
+    assert head(hub) == [(built["id"], built["content_hash"])]
+    rows = kept_graph(hub)
+    assert rows.content_hash == built["content_hash"]
+    ids = {row[0] for row in rows.nodes}
+    chats = {message(said.m1), message(said.m2), message(said.m3), thread(said.one, said.m1)}
+    assert chats | {f"{SOURCE}:chat:{said.one}", f"{SOURCE}:chat:{said.two}", RUNBOOK} <= ids
+    assert message(said.m0) not in ids
+    assert not list(hub.worker_dir.rglob("*.sqlite")), "the hub writes no graph file"
+    assert f"chat:{said.one}" in rows.top[1] and f"chat:{said.two}" in rows.top[1]
+
+    # a build in memory of the corpus the worker built from gives the rows the tables hold
+    report, own = build_rows(worker_project(hub.worker_dir, A))
+    assert report.ok and own.content_hash == rows.summary["content_hash"] == built["content_hash"]
+    assert sorted(own.nodes) == sorted(rows.nodes) and sorted(own.edges) == sorted(rows.edges)
+    assert own.keyed == rows.keyed and own.top == rows.top
 
     say(hub, said.two, "alice", "One more mango")
     assert queued(hub) == 1
+
+
+def test_chats_unchanged_build_the_same_content_hash_on_the_hub_and_in_memory(hub, caplog):
+    converse(hub)
+    run_jobs(hub.db, hub.s3, hub.worker_dir)
+    built = builds(hub)[0]
+    assert built["status"] == "succeeded"
+
+    done(hub.client.post(f"/v1/kg/{A}/builds", headers=hub.alice), 202)  # nothing changed since
+    with caplog.at_level("INFO", logger="evo_agents.hub.kg_build"):
+        run_jobs(hub.db, hub.s3, hub.worker_dir)
+    same = builds(hub)[0]
+    assert same["id"] != built["id"] and same["status"] == "succeeded" and same["graph_kept"]
+    assert same["content_hash"] == built["content_hash"]
+    (finished,) = [r for r in caplog.records if r.getMessage() == "kg build succeeded" and r.project == A]
+    assert finished.skipped is True  # the same corpus and inputs: the rows the tables hold, built again by no one
+    assert kept_graph(hub).content_hash == built["content_hash"]
+
+    # two builds in memory of the same corpus, the second with an empty memo, hash as the hub's
+    project = worker_project(hub.worker_dir, A)
+    first, _ = build_rows(project)
+    assert first.ok and first.content_hash == built["content_hash"]
+    checked = verify_rows(project, built["content_hash"], cold=True)
+    assert checked["match"], checked
 
 
 # Reading the built graph
@@ -340,6 +409,49 @@ def test_chats_in_the_built_graph_show_only_to_who_reads_each_chat_now(hub):
     assert not any(node(hub, found, "dave") for found in (m1, m2, kiwi, room))
     assert node(hub, m3, "dave") is not None
     assert call_tool(hub, "kg_node", {"id": m3}, member="carol").json()["isError"]  # carol's grant stops at public
+
+
+def test_chats_the_snapshot_coordinator_shows_a_chat_only_to_a_reader_in_it(hub):
+    said = converse(hub)
+    run_jobs(hub.db, hub.s3, hub.worker_dir)
+    built = builds(hub)[0]
+    m1, m2, m3 = message(said.m1), message(said.m2), message(said.m3)
+    kiwi, room = thread(said.one, said.m1), f"{SOURCE}:chat:{said.one}"
+    one, two, beta = f"chat:{said.one}", f"chat:{said.two}", f"grant:{B}:internal"
+
+    async def read() -> tuple:
+        engine = make_engine(hub.db)
+        coordinator = kg_snapshots.SnapshotCoordinator(engine)
+        try:
+            held = await coordinator.get(project_id(hub))
+            readers = (frozenset(), frozenset({one}), frozenset({one, beta}), frozenset({one, two, beta}))
+            views = [await coordinator.view(project_id(hub), reader) for reader in readers]
+            return held, readers, views
+        finally:
+            await coordinator.close()
+            await engine.dispose()
+
+    held, readers, views = asyncio.run(read())
+    assert held.build_id == built["id"] and held.snapshot.content_hash == built["content_hash"]
+    items = (m1, m2, m3, kiwi, room)
+    # the audiences of erin (no chat), bob (chat one, joined after the agent of beta left), and members of chat one,
+    # then of both chats, who hold a grant on beta: as the hub computes them for each read (kg_audience)
+    sees = [set(), {m2}, {m1, m2, kiwi, room}, set(items)]
+    for reader, view, seen in zip(readers, views, sees, strict=True):
+        assert {n for n in items if view.node(n) is not None} == seen, reader
+        assert view.node(RUNBOOK) is not None, reader  # the docs carry no audience
+        assert all(view.degree(n) == 0 for n in items if n not in seen), reader
+
+    def searched_by(audience: frozenset[str], text: str) -> set[str]:
+        results, _ = SnapshotSearch(held.snapshot, INTERNAL, audience).search(text, limit=25)
+        return {n["id"] for n in results}
+
+    assert not searched_by(frozenset(), "kiwi rollout") & set(items)  # a reader in no chat
+    assert m2 in searched_by(frozenset({one}), "search service restart")
+    assert m1 not in searched_by(frozenset({one}), "kiwi rollout")  # m1 also needs a grant on beta
+    assert m1 in searched_by(frozenset({one, beta}), "kiwi rollout")
+    assert m3 not in searched_by(frozenset({one, beta}), "mango")  # of chat two
+    assert m3 in searched_by(frozenset({two, beta}), "mango")
 
 
 def test_chats_source_gives_nothing_and_queues_nothing_without_chats_read(hub):
