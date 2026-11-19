@@ -9,6 +9,34 @@ it as a core plugin, and the hub's image pins it (evo-agents' `docs/plugins.md`,
 - **The group bridge** (API 1.5, evo-agents' `docs/chat-bridges.md`). A Telegram group is bridged to a group chat of
   the hub, both ways. This part runs only in projects that enable the plugin.
 
+## Answering a decision in the private chat
+
+A decision's message has one button per option and one that opens it on the hub. The member answers with a button, or
+in words: they reply to the decision's message (Telegram's *Reply*) with a text. Only the private chat answers this
+way; a bridged group does not.
+
+- **A reply answers the decision of the message it replies to, and no other**, even when several decisions wait for the
+  member. The hub keeps the words whole as the answer, with no option, and records that it came through `telegram`
+  (`answered_via`; the web and `evo-agents hub decision show` show it as a free answer). The run gets it in its inbox,
+  or resumes. The bot then edits the decision's message: it ends with *Answered in words by <login>*, its option
+  buttons go and its *Open on the hub* button stays. It tells the member, as a reply, that the answer went to the run.
+- **Words that reply to no message**, or to a message of the bot that is not a decision's (a notice, the link
+  message), answer nothing. The bot tells the member to reply to the decision's own message (`NO_BLOCKER`). A
+  proposal takes its buttons only (`WORDS_FOR_DECISIONS`). A chat that is not linked gets the help, which says how to
+  link it.
+- **A decision that has its answer already**, given on Telegram, on the web or with the CLI, changes nothing: the bot
+  tells the member so (`ALREADY_ANSWERED`). A reply sent twice, or an update Telegram delivers again, is no second
+  answer. A chat that is not linked (`NOT_LINKED`), or the chat of a member the decision was not sent to, answers
+  nothing.
+- **Words that look like they hold a secret** (a token, a key or a password: what the hub's `evo_agents.hub.redact`
+  masks) are refused by the hub before it keeps anything: the decision stays open, and no inbox, audit row or log
+  line holds them. The bot tells the member the answer was not kept because it looks like it holds a secret, without
+  repeating it (`HOLDS_SECRET`), and to give a credential on the hub instead. Words longer than the hub takes (4 KiB)
+  get `TOO_LONG`.
+
+The bot's messages are in English. The refusal of secrets and `answered_via` come from evo-agents (plan
+dev8-telegram-free-answer step 1); an older hub keeps no channel and filters nothing.
+
 ## Setting up the bot
 
 The variables `EVO_HUB_TELEGRAM_*` and the command `evo-agents hub admin telegram [--set-webhook]` stay as they were
@@ -111,6 +139,11 @@ Every new message of the chat goes out, except the ones that came from the group
   changes hands.
 
 ## Tests
+
+`plugin_tests/test_telegram.py` drives the private channel the same way. The answer in words is
+`test_a_reply_to_the_decisions_message_answers_it_in_words`, `test_words_that_reply_to_no_blocker_answer_nothing_and_say_how`,
+`test_a_reply_to_an_answered_decision_changes_nothing_and_says_so` and
+`test_words_that_hold_a_secret_are_refused_and_not_kept`.
 
 `plugin_tests/test_telegram_bridge.py` drives the bridge through a hub of evo-agents at the lock and the fake Bot API
 of `plugin_tests/fake_telegram.py`. It covers linking, unlinking, migration, mentions, members who have not linked,

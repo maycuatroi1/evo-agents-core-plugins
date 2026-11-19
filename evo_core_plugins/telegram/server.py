@@ -37,7 +37,13 @@ in INBOUND_SECONDS and drops the rest unanswered, and answers 200 for anything i
 send it again. A button answers a decision or a proposal (``hub.answer_decision``, ``hub.answer_proposal``) through the
 same code as the web, as the member the chat is linked to, with no token (the audit row ends ``via=telegram``); then
 the hub answers the button (answerCallbackQuery) and edits the message to say what happened, the web's button kept. A
-reply to a decision's message is its answer in words. Before anything of a decision or proposal is read, the hub checks
+reply to a decision's message is its answer in words, to that decision alone: the hub keeps it as a free answer that
+came through telegram (``answered_via``), the message replied to is edited to say who answered it in words, its options
+gone and its web button kept, and the chat is told the answer went to the run. Words that reply to no message, or to a
+message that is no decision's, answer nothing and are told how (NO_BLOCKER); a decision answered already, on Telegram,
+the web or the CLI, changes nothing and the chat is told so (ALREADY_ANSWERED), which holds for an update Telegram
+sends again too; words the hub's filter of secrets catches are kept nowhere and the chat is told so without them
+(HOLDS_SECRET). Before anything of a decision or proposal is read, the hub checks
 that the member holds a grant on its project: a button or reply naming one they do not gets NOT_YOURS, the same words
 whether it exists or not, and a project whose messages are restricted takes no answer from Telegram
 (RESTRICTED_ANSWER), as its messages carry no buttons. A proposal takes no answer while a hub admin has turned the
@@ -122,7 +128,22 @@ NOT_THE_HUBS = "This button is not the hub's."
 NOT_LINKED = "This chat is not linked to the hub: link it from the hub's Inbox first."
 NO_LONGER_OPEN = "This is no longer open: it was answered already, or it closed."
 WORDS_FOR_DECISIONS = "Only a decision takes an answer in words: answer a proposal with its buttons."
+NO_BLOCKER = (
+    "Only a decision takes an answer in words, and these words answer none: reply to the message of the decision you "
+    "answer, the one with its options, with your answer. A proposal takes its buttons."
+)
 TOO_LONG = "That answer is too long for the hub (4 KiB at most): answer on the web."
+ALREADY_ANSWERED = "Decision #{decision_id} has its answer already, so nothing changed: your words were not kept."
+HOLDS_SECRET = (
+    "That answer looks like it holds a secret (a token, a key or a password), so the hub kept none of it: answer "
+    "again without it, and give a credential on the hub."
+)
+# The 422 the hub's answer_decision gives words its filter of secrets masks any part of, word for word
+# (core_plugin_api._acts.HOLDS_SECRET of evo-agents, which the API does not export): every other 422 is their length.
+HUBS_HOLDS_SECRET = (
+    "the answer looks like it holds a secret (a token, a key or a password), so the hub kept none of it: "
+    "answer again without it, and give a credential on the hub"
+)
 THE_HUBS_WORDS = {hub.NOT_YOURS: NOT_YOURS, hub.RESTRICTED_ANSWER: RESTRICTED_ANSWER}  # what this channel says instead
 
 TRANSPORT: httpx.AsyncBaseTransport | None = None  # tests put a fake Bot API here
@@ -827,7 +848,13 @@ class Updates:
             return await self.stop(chat_id, sender)
         replied = message.get("reply_to_message")
         if found is None and text.strip() and isinstance(replied, dict) and isinstance(replied.get("message_id"), int):
-            return await self.reply(message, chat_id, sender, replied["message_id"], text)
+            return await self.reply(message, chat_id, sender, replied, text)
+        if found is None and text.strip() and isinstance(sender.get("id"), int):
+            async with hub.begin(self.request) as conn:
+                member = await _member_of(conn, chat_id, sender["id"])
+            if member is not None:  # words of a linked chat that reply to no message: they answer nothing
+                await self.say(chat_id, NO_BLOCKER, reply_to=message.get("message_id"))
+                return "guided"
         await self.say(chat_id, HELP)
         return "help"
 
@@ -866,33 +893,49 @@ class Updates:
         await self.say(chat_id, "This chat is unlinked from the hub: nothing more comes here until you link it again.")
         return "unlinked"
 
-    async def reply(self, message: dict, chat_id: int, sender: dict, replied_id: int, text: str) -> str:
-        """A reply to a message the hub sent in this chat: the answer in words to its decision."""
+    async def reply(self, message: dict, chat_id: int, sender: dict, replied: dict, text: str) -> str:
+        """A reply to a message the hub sent in this chat: the answer in words to the decision of that message, and of
+        no other (a member with several waiting answers each in reply to its own). Once the hub took it, the message
+        replied to is edited to say who answered it in words, its options gone and its web button kept."""
         sender_id = sender.get("id")
+        answered_by = decision_id = None
         try:
             async with hub.begin(self.request) as conn:
                 member = await _member_of(conn, chat_id, sender_id) if isinstance(sender_id, int) else None
                 if member is None:
                     outcome = NOT_LINKED
                 else:
-                    found = await hub.delivered_notification(conn, member, telegram.message_ref(chat_id, replied_id))
-                    if found is None or found.kind != "decision" or found.decision_id is None:
+                    ref = telegram.message_ref(chat_id, replied["message_id"])
+                    found = await hub.delivered_notification(conn, member, ref)
+                    if found is not None and found.kind == "proposal":
                         outcome = WORDS_FOR_DECISIONS
+                    elif found is None or found.kind != "decision" or found.decision_id is None:
+                        outcome = NO_BLOCKER
                     else:
-                        outcome = await self._answer_in_words(conn, member, found.decision_id, text)
+                        decision_id = found.decision_id
+                        outcome, answered_by = await self._answer_in_words(conn, member, decision_id, text)
         except HTTPException as exc:
             outcome = f"The hub did not take that answer: {_words(exc)}"
+            answered_by = None
+        if answered_by is not None and decision_id is not None:
+            await self.edit_answered(chat_id, replied, f"Answered in words by {answered_by}", decision_id)
         await self.say(chat_id, outcome, reply_to=message.get("message_id"))
         return "replied"
 
-    async def _answer_in_words(self, conn, member: hub.Member, decision_id: int, text: str) -> str:
+    async def _answer_in_words(self, conn, member: hub.Member, decision_id: int, text: str) -> tuple[str, str | None]:
+        """What the chat is told of ``text`` as the answer to ``decision_id``, and who answered it when the hub took
+        it. The words are never repeated: not in what the chat is told, nor in a log line."""
         try:
             answered = await hub.answer_decision(conn, member, decision_id, CLEARED, text=text)
         except hub.Refused as exc:
-            if exc.status_code == 422:  # the one body check words fail: their length
-                return TOO_LONG
+            if exc.status_code == 422 and exc.detail == HUBS_HOLDS_SECRET:
+                return HOLDS_SECRET, None
+            if exc.status_code == 422:  # the other body check words fail: their length
+                return TOO_LONG, None
+            if exc.status_code == 409 and str(exc.detail).startswith(f"decision {decision_id} is answered,"):
+                return ALREADY_ANSWERED.format(decision_id=decision_id), None
             raise
-        return f"Your answer to decision #{decision_id} went to run #{answered.inbox_run}."
+        return f"Your answer to decision #{decision_id} went to run #{answered.inbox_run}.", member.login
 
     async def button(self, callback: dict, chat_id: int) -> str:
         """A button of a decision's or a proposal's message."""
@@ -926,19 +969,32 @@ class Updates:
                 callback_query_id=str(callback.get("id")),
                 text=telegram.clip(toast or "Done.", telegram.TOAST_CHARS),
             )
-            if settled is not None and isinstance(message.get("message_id"), int):
-                buttons = telegram.url_buttons(message.get("reply_markup"))
-                await self.bot.call(
-                    "editMessageText",
-                    chat_id=chat_id,
-                    message_id=message["message_id"],
-                    text=telegram.answered_text(str(message.get("text") or ""), settled),
-                    parse_mode=telegram.PARSE_MODE,
-                    reply_markup={"inline_keyboard": buttons} if buttons else None,
-                    link_preview_options={"is_disabled": True},
-                )
         except BotApiError as exc:
             log.warning("telegram answer to a button failed", extra={"code": exc.code})
+            return
+        if settled is not None:
+            await self.edit_answered(chat_id, message, settled)
+
+    async def edit_answered(self, chat_id: int, message: dict, settled: str, decision_id: int | None = None) -> None:
+        """Edit ``message``, a message the hub sent, to end with ``settled``: its options go and its web button stays.
+        A message Telegram sent back without its buttons gets the web button of ``decision_id``."""
+        if not isinstance(message.get("message_id"), int):
+            return
+        buttons = telegram.url_buttons(message.get("reply_markup"))
+        if not buttons and decision_id is not None:
+            buttons = telegram.web_button(hub.web_url(self.config, f"/inbox?decision={decision_id}"))
+        try:
+            await self.bot.call(
+                "editMessageText",
+                chat_id=chat_id,
+                message_id=message["message_id"],
+                text=telegram.answered_text(str(message.get("text") or ""), settled),
+                parse_mode=telegram.PARSE_MODE,
+                reply_markup={"inline_keyboard": buttons} if buttons else None,
+                link_preview_options={"is_disabled": True},
+            )
+        except BotApiError as exc:
+            log.warning("telegram edit of an answered message failed", extra={"code": exc.code})
 
     async def _answer(self, conn, member: hub.Member, data: telegram.Callback) -> str:
         """Answer what ``data`` names as ``member``, in ``conn``; what the message says it became. The hub checks the

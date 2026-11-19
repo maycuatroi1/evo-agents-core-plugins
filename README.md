@@ -84,6 +84,14 @@ versions.
 
 ### Releases
 
+- **2.7.0**: telegram 1.2.0 finishes an answer in words (UC DEV-8). A reply to a decision's message answers that
+  decision alone; the bot edits the message to say who answered it in words, drops its options, keeps its web button,
+  and tells the member the answer went to the run. Words that reply to no decision's message answer nothing and get
+  how to reply; a decision answered already (on Telegram, the web or the CLI) changes nothing and the member is told
+  so; words the hub refuses because they look like they hold a secret get their own message, which does not repeat
+  them. The decision keeping the channel (`answered_via`) and the refusal of secrets are the hub's (evo-agents, plan
+  dev8-telegram-free-answer step 1): an older hub keeps no channel and filters nothing. API 1.7, no migration.
+
 - **2.6.3**: telegram 1.1.2 tells the hub how long a held message waits: the bridge's `Later` carries
   `retry_after`, the pace's wait when a group has had its 20 messages a minute, Telegram's `retry_after` on a 429,
   1 second when files are left for the next try. A hub of evo-agents pull request #569 (plan events-out-in-seconds)
