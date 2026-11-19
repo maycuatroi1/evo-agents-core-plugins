@@ -10,6 +10,7 @@ to the Bot FAQ's pace and waits out a 429; a project whose hub sink is cleared f
 name, the kind and the link only; and without its two variables the channel is off while the hub runs."""
 
 import itertools
+import logging
 from collections import OrderedDict
 from datetime import timedelta
 from functools import partial
@@ -159,9 +160,19 @@ def new_link(client, headers) -> str:
     return url.rpartition("=")[2]
 
 
-def say(client, chat_id: int, text: str, *, username: str | None = "owner_tg", reply_to: int | None = None) -> str:
+def say(
+    client,
+    chat_id: int,
+    text: str,
+    *,
+    username: str | None = "owner_tg",
+    reply_to: int | None = None,
+    replied: dict | None = None,
+) -> str:
+    """``text`` from ``chat_id``; with ``reply_to``, a reply to that message id, with ``replied`` to a message the bot
+    sent (as sendMessage took it), which Telegram sends back with its text and its buttons."""
     chat, sender = private_chat(chat_id, username)
-    return handled(client, text_update(next(updates), chat, sender, text, reply_to=reply_to))
+    return handled(client, text_update(next(updates), chat, sender, text, reply_to=reply_to, replied=replied))
 
 
 def linked(client, headers, chat_id: int = OWNER_CHAT) -> None:
@@ -392,17 +403,120 @@ def test_a_button_answers_the_decision_through_the_same_code_as_the_web(client, 
     )
 
 
+def web_button(decision_id: int) -> dict:
+    return {"inline_keyboard": [[{"text": "Open on the hub", "url": f"https://hub.test/inbox?decision={decision_id}"}]]}
+
+
 def test_a_reply_to_the_decisions_message_answers_it_in_words(client, hub, hub_db, bot):
     sent = sent_decision(client, hub, bot)
     decision_id = sent.decision["id"]
-    assert say(client, OWNER_CHAT, ANSWER_TEXT, reply_to=sent.message["message_id"]) == "replied"
-    shown = client.get(f"/v1/projects/{PROJECT}/decisions/{decision_id}", headers=hub["owner"]).json()
+    # Another decision waits for the same member: a reply answers the decision of its own message, and no other.
+    other = asked(client, sent.worker, sent.run["id"], question="Which cache should it keep?", step_key="3")
+    assert deliver(client)["delivered"] >= 1
+    other_message = bot.fake.sent()[-1]
+    assert other_message["message_id"] != sent.message["message_id"]
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=sent.message) == "replied"
+    shown = decision(client, hub["owner"], decision_id)
     assert (shown["state"], shown["answer_option"], shown["answer_text"]) == ("answered", None, ANSWER_TEXT)
+    assert (shown["answered_by"], shown["answered_via"]) == (OWNER, "telegram")
+    assert decision(client, hub["owner"], other["id"])["state"] == "open"
+    inbox = tables.run_inbox
+    ((body,),) = sql(hub_db, select(inbox.c.body).where(inbox.c.decision_id == decision_id))
+    assert ANSWER_TEXT in body
+    (row,) = audit_rows(hub_db, "decision")
+    assert row[1].endswith("via=telegram") and row[2] == OWNER
     assert replies(bot.fake, OWNER_CHAT)[-1] == f"Your answer to decision #{decision_id} went to run #{sent.run['id']}."
-    assert say(client, OWNER_CHAT, "again", reply_to=sent.message["message_id"]) == "replied"
-    assert "is answered, not open" in replies(bot.fake, OWNER_CHAT)[-1]
-    assert say(client, OWNER_CHAT, "to nothing", reply_to=424242) == "replied"
-    assert replies(bot.fake, OWNER_CHAT)[-1].startswith("Only a decision takes an answer in words")
+    # The message replied to says who answered it in words; its options go, and its web button stays.
+    (edited,) = bot.fake.sent("editMessageText")
+    assert (edited["chat_id"], edited["message_id"]) == (OWNER_CHAT, sent.message["message_id"])
+    assert QUESTION in edited["text"] and edited["text"].endswith(f"<b>Answered in words by {OWNER}</b>")
+    assert ANSWER_TEXT not in edited["text"]
+    assert edited["reply_markup"] == web_button(decision_id)
+    # A message Telegram sends back without its buttons still keeps the web button of its decision.
+    bare = {"message_id": other_message["message_id"], "text": other_message["text"]}
+    assert say(client, OWNER_CHAT, "Keep Redis.", replied=bare) == "replied"
+    assert decision(client, hub["owner"], other["id"])["answered_via"] == "telegram"
+    assert bot.fake.sent("editMessageText")[-1]["reply_markup"] == web_button(other["id"])
+
+
+def test_words_that_reply_to_no_blocker_answer_nothing_and_say_how(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    # Words that reply to no message, and words that reply to a message that is no decision's.
+    assert say(client, OWNER_CHAT, ANSWER_TEXT) == "guided"
+    assert replies(bot.fake, OWNER_CHAT)[-1] == server_telegram.NO_BLOCKER
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, reply_to=424242) == "replied"
+    assert replies(bot.fake, OWNER_CHAT)[-1] == server_telegram.NO_BLOCKER
+    linked_note = bot.fake.sent()[0]  # the bot's "Linked to ..." message: the hub's, but no decision's
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, reply_to=linked_note["message_id"]) == "replied"
+    assert replies(bot.fake, OWNER_CHAT)[-1] == server_telegram.NO_BLOCKER
+    assert "reply to the message of the decision" in server_telegram.NO_BLOCKER
+    assert "proposal takes its buttons" in server_telegram.NO_BLOCKER
+    # A chat that is not linked gets the help, which says how to link it.
+    assert say(client, 9999, ANSWER_TEXT) == "help"
+    assert replies(bot.fake, 9999)[-1] == server_telegram.HELP
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["state"], shown["answer_text"], shown["answered_via"]) == ("open", None, None)
+    assert bot.fake.sent("editMessageText") == [] and audit_rows(hub_db, "decision") == []
+    assert sql(hub_db, select(func.count()).select_from(tables.run_inbox)) == [(0,)]
+
+
+def test_a_reply_to_an_answered_decision_changes_nothing_and_says_so(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    # A chat that is not linked, or another member's chat, answers nothing.
+    assert say(client, 9999, ANSWER_TEXT, replied=sent.message) == "replied"
+    assert replies(bot.fake, 9999)[-1] == server_telegram.NOT_LINKED
+    linked(client, hub["other_web"], OTHER_CHAT)
+    assert say(client, OTHER_CHAT, ANSWER_TEXT, username="other_tg", replied=sent.message) == "replied"
+    assert replies(bot.fake, OTHER_CHAT)[-1] == server_telegram.NO_BLOCKER
+    assert decision(client, hub["owner"], decision_id)["state"] == "open"
+    # Answered on the web: a reply on Telegram changes nothing, and the chat is told it has its answer.
+    other = asked(client, sent.worker, sent.run["id"], question="Which cache should it keep?", step_key="3")
+    assert deliver(client)["delivered"] >= 1
+    other_message = bot.fake.sent()[-1]
+    answered_decision(client, hub["owner_web"], other["id"], option="postgres")
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=other_message) == "replied"
+    assert replies(bot.fake, OWNER_CHAT)[-1] == server_telegram.ALREADY_ANSWERED.format(decision_id=other["id"])
+    shown = decision(client, hub["owner"], other["id"])
+    assert (shown["answer_option"], shown["answer_text"], shown["answered_via"]) == ("postgres", None, None)
+    assert bot.fake.sent("editMessageText") == []
+    # Answered from Telegram: the same update sent again, or a second reply, is no second answer.
+    chat, sender = private_chat(OWNER_CHAT)
+    update = text_update(next(updates), chat, sender, ANSWER_TEXT, replied=sent.message)
+    assert handled(client, update) == "replied"
+    assert handled(client, update) == "replied"  # Telegram delivered it again
+    assert say(client, OWNER_CHAT, "No, keep SQLite.", replied=sent.message) == "replied"
+    expected = server_telegram.ALREADY_ANSWERED.format(decision_id=decision_id)
+    assert replies(bot.fake, OWNER_CHAT)[-2:] == [expected, expected]
+    assert "has its answer already" in expected
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["answer_option"], shown["answer_text"], shown["answered_via"]) == (None, ANSWER_TEXT, "telegram")
+    assert len(bot.fake.sent("editMessageText")) == 1
+    inbox = tables.run_inbox
+    assert sql(hub_db, select(func.count()).select_from(inbox).where(inbox.c.decision_id == decision_id)) == [(1,)]
+    assert len([row for row in audit_rows(hub_db, "decision") if row[1].endswith("via=telegram")]) == 1
+
+
+def test_words_that_hold_a_secret_are_refused_and_not_kept(client, hub, hub_db, bot, caplog):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    leaked = "hunter2-telegram-42"
+    caplog.set_level(logging.DEBUG)
+    assert say(client, OWNER_CHAT, f"Use PASSWORD={leaked} for it", replied=sent.message) == "replied"
+    told = replies(bot.fake, OWNER_CHAT)[-1]
+    assert told == server_telegram.HOLDS_SECRET and leaked not in told
+    assert leaked not in caplog.text
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["state"], shown["answer_text"], shown["answered_via"]) == ("open", None, None)
+    assert sql(hub_db, select(func.count()).select_from(tables.run_inbox)) == [(0,)]
+    assert audit_rows(hub_db, "decision") == [] and bot.fake.sent("editMessageText") == []
+    # Words too long for the hub are still told so, in their own words.
+    assert say(client, OWNER_CHAT, "x" * 5000, replied=sent.message) == "replied"
+    assert replies(bot.fake, OWNER_CHAT)[-1] == server_telegram.TOO_LONG
+    # Words without the secret answer it.
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=sent.message) == "replied"
+    assert decision(client, hub["owner"], decision_id)["answered_via"] == "telegram"
 
 
 def test_only_the_runs_owner_answers_and_an_unlinked_chat_answers_nothing(client, hub, hub_db, bot):
@@ -412,7 +526,7 @@ def test_only_the_runs_owner_answers_and_an_unlinked_chat_answers_nothing(client
     assert press(client, OTHER_CHAT, f"d:{decision_id}:sqlite", sent.message) == "refused"
     assert (
         bot.fake.sent("answerCallbackQuery")[-1]["text"]
-        == f"only {OWNER}, who dispatched its run, may answer decision {decision_id}"
+        == f"only {OWNER}, who dispatched its run, or an admin of project {PROJECT}, may answer decision {decision_id}"
     )
     assert press(client, 9999, f"d:{decision_id}:sqlite", sent.message) == "refused"
     assert bot.fake.sent("answerCallbackQuery")[-1]["text"].startswith("This chat is not linked to the hub")
@@ -782,5 +896,5 @@ def test_a_reply_finds_the_decision_of_its_own_chat_only(client, hub, hub_db, bo
     decision_id = sent.decision["id"]
     linked(client, hub["owner_web"], OTHER_CHAT)  # the owner's other chat, whose message ids are its own
     assert say(client, OTHER_CHAT, ANSWER_TEXT, reply_to=sent.message["message_id"]) == "replied"
-    assert replies(bot.fake, OTHER_CHAT)[-1].startswith("Only a decision takes an answer in words")
+    assert replies(bot.fake, OTHER_CHAT)[-1] == server_telegram.NO_BLOCKER
     assert decision(client, hub["owner"], decision_id)["state"] == "open"

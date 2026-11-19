@@ -187,9 +187,21 @@ def private_chat(chat_id: int, username: str | None = "owner_tg") -> tuple[dict,
     return {"id": chat_id, "type": "private"}, sender
 
 
-def text_update(update_id: int, chat: dict, sender: dict, text: str, *, reply_to: int | None = None) -> dict:
+def text_update(
+    update_id: int, chat: dict, sender: dict, text: str, *, reply_to: int | None = None, replied: dict | None = None
+) -> dict:
+    """A message of ``text``; with ``reply_to``, a reply to that message id, and with ``replied``, a reply to a message
+    the bot sent (as sendMessage took it), which Telegram sends back with its text and its buttons."""
     message = {"message_id": update_id + 50_000, "date": 1_760_000_000, "chat": chat, "from": sender, "text": text}
-    if reply_to is not None:
+    if replied is not None:
+        message["reply_to_message"] = {
+            "message_id": replied["message_id"],
+            "chat": chat,
+            "date": 1_760_000_000,
+            "text": replied.get("text", ""),
+            "reply_markup": replied.get("reply_markup"),
+        }
+    elif reply_to is not None:
         message["reply_to_message"] = {"message_id": reply_to, "chat": chat, "date": 1_760_000_000, "text": "..."}
     return {"update_id": update_id, "message": message}
 
