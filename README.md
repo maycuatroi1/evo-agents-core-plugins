@@ -81,10 +81,12 @@ versions.
 | 2.5.0 | 1.7 | `105882621becad32331d60b86a151a034c1a6406` (pull request #314) |
 | 2.6.0 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` |
 | 2.5.1 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` (pull request #327, plan kg-retrieval-quality) |
-| 2.7.2 | 1.8 | `3efecfbef56e1fa3ef0c4b4f8b9761aa55b08e71` (pull request #785: a bridged group's sender who linked no account comes in as a guest) |
+| 2.7.3 | 1.8 | `3efecfbef56e1fa3ef0c4b4f8b9761aa55b08e71` (pull request #785: a bridged group's sender who linked no account comes in as a guest) |
 
 ### Releases
 
+- **2.7.3**: the content of 2.7.2. Its release stopped at a test of telegram that expected the audit line of a
+  decision's answer without the `label=` a hub of API 1.8 writes in it; nothing was published as 2.7.2.
 - **2.7.2**: the code of 2.7.1, every plugin asking API 1.8. None of them uses what 1.8 adds (`bridge_guest`), so
   they behave as 2.7.1 does on a hub that serves 1.8; a hub that serves 1.7 leaves them out. No migration.
 - **2.7.1**: telegram 1.2.1 finishes UC DEV-8 r2. A reply to a message that went out link only (its project keeps

@@ -382,7 +382,7 @@ def test_a_button_answers_the_decision_through_the_same_code_as_the_web(client, 
     ((body,),) = sql(hub_db, select(inbox.c.body).where(inbox.c.decision_id == decision_id))
     assert body.startswith(f"Answer to decision #{decision_id} (architecture)") and "postgres, Move to Postgres" in body
     (row,) = [row for row in audit_rows(hub_db, "decision")]
-    assert row[1].endswith("option=postgres via=telegram") and row[2] == OWNER
+    assert row[1].endswith("option=postgres label=internal via=telegram") and row[2] == OWNER
     a = tables.audit
     assert sql(hub_db, select(a.c.token_id).where(a.c.action == "decision.answer")) == [(None,)]
     (toast,) = bot.fake.sent("answerCallbackQuery")
