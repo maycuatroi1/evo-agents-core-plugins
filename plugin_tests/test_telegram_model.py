@@ -71,6 +71,7 @@ def test_button_data_takes_only_what_an_option_key_may_be():
 def test_a_sent_message_is_kept_by_its_chat_and_its_id():
     assert telegram.message_ref(7001, 1005) == "7001:1005"
     assert telegram.message_ref(-5001, 1005) != telegram.message_ref(7001, 1005)
+    assert telegram.message_ref(7001, 1005, link_only=True) == "7001:1005:link"  # a message that went as its link alone
 
 
 LEVELS = ["public", "internal", "customer", "secret"]  # evo_agents.kg.policy.DEFAULT_LEVELS
@@ -180,7 +181,8 @@ def test_a_restricted_message_holds_the_project_the_kind_and_the_link_only():
     url = "https://hub.test/inbox?decision=5"
     message = telegram.minimal_message("northwind", "decision", None, url, "/inbox?decision=5")
     assert message.text == f"<b>northwind</b>: A decision waits for your answer.\n\n{url}"
-    assert message.buttons == [[{"text": "Open on the hub", "url": url}]]
+    assert message.buttons == [[{"text": "Open on the hub", "url": url}]] and message.link_only
+    assert not telegram.closed_message("northwind", "decision", 5, url, "/inbox?decision=5").link_only
     brief = telegram.minimal_message("northwind", "notice", "curator_brief", None, "/p/northwind/curator")
     assert brief.text == "<b>northwind</b>: Morning brief.\n\n/p/northwind/curator" and brief.buttons == []
 

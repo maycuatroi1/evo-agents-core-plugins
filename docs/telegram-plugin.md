@@ -28,11 +28,25 @@ way; a bridged group does not.
   tells the member so (`ALREADY_ANSWERED`). A reply sent twice, or an update Telegram delivers again, is no second
   answer. A chat that is not linked (`NOT_LINKED`), or the chat of a member the decision was not sent to, answers
   nothing.
+- **A decision that was cancelled or expired** takes no answer either: the decision keeps its state, and no inbox or
+  audit row is written. The bot tells the member that decision #<id> was cancelled, or expired, naming the state the
+  hub's refusal gives (`CLOSED_DECISION`), without repeating the words.
+- **A reply to a message that went as the link alone** (a decision of a restricted project, `minimal_message`) answers
+  nothing, whatever became of the project's clearance since: the hub keeps such a message with a ref of its own
+  (`<chat>:<message>:link`), and the refusal follows that kind of message, not the project. Nothing of the decision is
+  read or written: no answer, audit row, inbox message or edit. The bot tells the member to answer it on the hub, with
+  the link of that decision, the one its *Open on the hub* button has (`.../inbox?decision=<id>`, `LINK_ONLY_ANSWER`).
+  A message sent before this kind of ref existed is still refused by the hub while its project is restricted
+  (`RESTRICTED_ANSWER`).
 - **Words that look like they hold a secret** (a token, a key or a password: what the hub's `evo_agents.hub.redact`
   masks) are refused by the hub before it keeps anything: the decision stays open, and no inbox, audit row or log
   line holds them. The bot tells the member the answer was not kept because it looks like it holds a secret, without
   repeating it (`HOLDS_SECRET`), and to give a credential on the hub instead. Words longer than the hub takes (4 KiB)
   get `TOO_LONG`.
+
+An answer in words has no label of its own: it is the decision's `answer_text`, read at the decision's label (its
+plan's, the project's by default), never at the channel's it came through. The bot's words and log lines never hold
+the words of an answer.
 
 The bot's messages are in English. The refusal of secrets and `answered_via` come from evo-agents (plan
 dev8-telegram-free-answer step 1); an older hub keeps no channel and filters nothing.
@@ -142,8 +156,11 @@ Every new message of the chat goes out, except the ones that came from the group
 
 `plugin_tests/test_telegram.py` drives the private channel the same way. The answer in words is
 `test_a_reply_to_the_decisions_message_answers_it_in_words`, `test_words_that_reply_to_no_blocker_answer_nothing_and_say_how`,
-`test_a_reply_to_an_answered_decision_changes_nothing_and_says_so` and
-`test_words_that_hold_a_secret_are_refused_and_not_kept`.
+`test_a_reply_to_an_answered_decision_changes_nothing_and_says_so`,
+`test_words_that_hold_a_secret_are_refused_and_not_kept`, `test_a_reply_finds_the_decision_of_its_own_chat_only`,
+`test_a_reply_to_a_link_only_message_is_refused_with_the_decisions_link`,
+`test_a_reply_to_a_cancelled_or_expired_decision_keeps_nothing_and_says_its_state` and
+`test_a_free_answer_is_kept_at_the_decisions_label`.
 
 `plugin_tests/test_telegram_bridge.py` drives the bridge through a hub of evo-agents at the lock and the fake Bot API
 of `plugin_tests/fake_telegram.py`. It covers linking, unlinking, migration, mentions, members who have not linked,
