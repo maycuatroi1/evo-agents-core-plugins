@@ -81,9 +81,18 @@ versions.
 | 2.5.0 | 1.7 | `105882621becad32331d60b86a151a034c1a6406` (pull request #314) |
 | 2.6.0 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` |
 | 2.5.1 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` (pull request #327, plan kg-retrieval-quality) |
+| 2.8.0 | 1.7 | `e7f93a86111354c123d10f656a9038e1d59a046b` (pull request #784: decisions carry a label, and channel edits) |
 
 ### Releases
 
+- **2.8.0**: telegram 1.3.0 sends a decision by its label and edits its message to the end. A decision whose label
+  (or, without one, its project's default label) keeps it off Telegram goes as the link alone, saying it must be opened
+  on the hub because of that label; its buttons, real or forged, answer nothing. Once the decision is answered,
+  cancelled or expired, the hub's outbox gives the channel an edit (`extra.edit`): the message drops its options, keeps
+  its web button and ends with who answered it and with which option, or with its state. A button of a decision no
+  longer open keeps nothing and says whether it was answered, cancelled or expired. An edit Telegram refuses with a
+  429 or cannot reach is tried again by the hub (RetryAfter, or a failed try), and the answer stays as kept. Needs
+  evo-agents at the commit above (API still 1.7).
 - **2.7.1**: telegram 1.2.1 finishes UC DEV-8 r2. A reply to a message that went out link only (its project keeps
   decisions off Telegram) answers nothing and gets the decision's own link on the hub (`/inbox?decision=<id>`); a reply
   to a decision cancelled or expired keeps nothing and the member is told which, without repeating the words.

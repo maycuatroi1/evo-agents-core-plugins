@@ -158,6 +158,14 @@ HUBS_HOLDS_SECRET = (
     "answer again without it, and give a credential on the hub"
 )
 THE_HUBS_WORDS = {hub.NOT_YOURS: NOT_YOURS, hub.RESTRICTED_ANSWER: RESTRICTED_ANSWER}  # what this channel says instead
+# A button of a decision no longer open, by the state the hub's 409 names: nothing is kept, and its message says so
+TAPPED_SETTLED = {
+    "answered": "Decision #{decision_id} has its answer already, so your tap changed nothing.",
+    "cancelled": "Decision #{decision_id} was cancelled, so your tap changed nothing.",
+    "expired": "Decision #{decision_id} expired, so your tap changed nothing.",
+}
+NOT_MODIFIED = "message is not modified"  # Telegram's 400 for an edit to what the message says already
+CANNOT_EDIT = ("message to edit not found", "message can't be edited")  # its 400s for a message it no longer edits
 
 TRANSPORT: httpx.AsyncBaseTransport | None = None  # tests put a fake Bot API here
 FETCH_TRANSPORT: httpx.AsyncBaseTransport | None = None  # and a fake store of files here; None: the network
@@ -455,30 +463,29 @@ class TelegramChannel(hub.Channel):
     def message(self, notification: hub.Outgoing) -> telegram.Message:
         url = hub.web_url(self.config, notification.link)
         extra = notification.extra or {}
+        settled = self.settled(notification)
         if extra.get("restricted", True):
+            why = ""
+            if notification.kind == "decision":
+                why = telegram.withheld_line(extra.get("restricted_by"), extra.get("label"))
             return telegram.minimal_message(
-                notification.project, notification.kind, notification.notice_kind, url, notification.link
+                notification.project,
+                notification.kind,
+                notification.notice_kind,
+                url,
+                notification.link,
+                why=why,
+                settled=settled,
             )
         decision, proposal = extra.get("decision"), extra.get("proposal")
         if notification.kind == "decision":
+            if decision and settled is not None:  # the edit of its message: what it asked, and what it became
+                return self._decision_message(notification, decision, url, settled)
             if not decision or decision["state"] != "open":  # answered or closed since: nothing of what it asked
                 return telegram.closed_message(
                     notification.project, "decision", notification.decision_id, url, notification.link
                 )
-            return telegram.decision_message(
-                decision_id=notification.decision_id,
-                project=notification.project or "",
-                run_id=notification.run_id,
-                plan_id=decision["plan_id"],
-                step_key=decision["step_key"],
-                category=decision["category"],
-                question=decision["question"],
-                options=decision["options"] or [],
-                url=url,
-                link=notification.link,
-                run_kind=decision.get("run_kind"),
-                run_title=decision.get("run_title"),
-            )
+            return self._decision_message(notification, decision, url)
         if notification.kind == "proposal":
             if not proposal or proposal["state"] != "open":  # never its summary, whatever it became
                 return telegram.closed_message(
@@ -502,6 +509,46 @@ class TelegramChannel(hub.Channel):
             body=notification.body,
             url=url,
             link=notification.link,
+        )
+
+    @staticmethod
+    def settled(notification: hub.Outgoing) -> str | None:
+        """What the edit of a decision's message ends with (``extra.edit``, once the decision no longer waits): who
+        answered it and with what, as far as the message may say it, or its state; None for a message to send."""
+        extra = notification.extra or {}
+        edit = extra.get("edit")
+        if notification.kind != "decision" or not isinstance(edit, dict):
+            return None
+        decision = extra.get("decision") if not extra.get("restricted", True) else None
+        decision = decision if isinstance(decision, dict) else {}
+        state = edit.get("state") or decision.get("state")
+        if state == "open":
+            return None
+        return telegram.settled_words(
+            notification.decision_id,
+            state,
+            answered_by=decision.get("answered_by"),
+            answered_via=decision.get("answered_via"),
+            answer_label=decision.get("answer_label"),
+        )
+
+    def _decision_message(
+        self, notification: hub.Outgoing, decision: dict, url: str | None, settled: str | None = None
+    ) -> telegram.Message:
+        return telegram.decision_message(
+            decision_id=notification.decision_id,
+            project=notification.project or "",
+            run_id=notification.run_id,
+            plan_id=decision["plan_id"],
+            step_key=decision["step_key"],
+            category=decision["category"],
+            question=decision["question"],
+            options=decision["options"] or [],
+            url=url,
+            link=notification.link,
+            run_kind=decision.get("run_kind"),
+            run_title=decision.get("run_title"),
+            settled=settled,
         )
 
     async def _pace(self, chat_id: int) -> None:
@@ -537,6 +584,9 @@ class TelegramChannel(hub.Channel):
         if not isinstance(chat_id, int):
             raise hub.ChannelGone("the channel names no Telegram chat: link it again")
         message = self.message(notification)
+        edit = (notification.extra or {}).get("edit")
+        if notification.kind == "decision" and isinstance(edit, dict):
+            return await self._edit(bot, chat_id, notification, message, edit)
         files = self.files(notification)
         if files is None:
             sent = await self._say(bot, chat_id, message)
@@ -550,6 +600,48 @@ class TelegramChannel(hub.Channel):
         if message_id is None:
             return None
         return telegram.message_ref(chat_id, message_id, link_only=message.link_only)
+
+    async def _edit(
+        self, bot: BotApi, chat_id: int, notification: hub.Outgoing, message: telegram.Message, edit: dict
+    ) -> str | None:
+        """Edit the message an earlier delivery sent (``edit.external_id``) to say what became of its decision: its
+        options go and the web's button stays. The ref of that message is the answer, so the edit keeps it. A message
+        Telegram finds the same already is edited (the webhook did it, or an earlier try); one Telegram can no longer
+        edit, or a ref the hub did not make, gets the edit as a new message; one of a chat no longer linked is left as
+        it is. A 429 is RetryAfter and any other failure a failed try, which the hub tries again within its window:
+        an answer already kept is never touched."""
+        if self.settled(notification) is None:  # its decision still waits: nothing to say of it
+            return edit.get("external_id") if isinstance(edit.get("external_id"), str) else None
+        found = telegram.parse_ref(edit.get("external_id"))
+        if found is None:
+            return await self._sent_ref(bot, chat_id, message)
+        ref_chat, message_id, link_only = found
+        if ref_chat != chat_id:  # the member linked another chat since: the old one is not the hub's to write to
+            log.info("telegram edit skipped: the chat is no longer linked", extra={"delivery": edit.get("delivery_id")})
+            return edit["external_id"]
+        await self._pace(chat_id)
+        try:
+            await bot.call(
+                "editMessageText",
+                chat_id=chat_id,
+                message_id=message_id,
+                text=message.text,
+                parse_mode=telegram.PARSE_MODE,
+                reply_markup=message.reply_markup(),
+                link_preview_options={"is_disabled": True},
+            )
+        except BotApiError as exc:
+            said = exc.description.lower()
+            if exc.code == 400 and NOT_MODIFIED in said:
+                return edit["external_id"]
+            if exc.code == 400 and any(words in said for words in CANNOT_EDIT):
+                return await self._sent_ref(bot, chat_id, message)
+            raise _channel_error(exc) from None
+        return telegram.message_ref(chat_id, message_id, link_only=link_only)
+
+    async def _sent_ref(self, bot: BotApi, chat_id: int, message: telegram.Message) -> str | None:
+        message_id = _sent_id(await self._say(bot, chat_id, message))
+        return None if message_id is None else telegram.message_ref(chat_id, message_id, link_only=message.link_only)
 
     async def _say(self, bot: BotApi, chat_id: int, message: telegram.Message, reply_to: int | None = None) -> Any:
         """Send ``message`` to the chat, as a reply to message ``reply_to`` when it names one."""
@@ -775,6 +867,17 @@ def _words(exc: HTTPException) -> str:
     return THE_HUBS_WORDS.get(detail, str(detail)) if isinstance(detail, str) else str(detail)
 
 
+def _tapped_settled(data: telegram.Callback, exc: HTTPException) -> str | None:
+    """What the message of a decision a button found no longer open says, by the state the hub's 409 names; None for
+    a proposal, or a 409 of another kind (its run takes no answer)."""
+    if data.kind != "decision":
+        return None
+    for state, words in TAPPED_SETTLED.items():
+        if str(exc.detail).startswith(f"decision {data.id} is {state},"):
+            return words.format(decision_id=data.id)
+    return None
+
+
 LINK_FAILED = (
     "That link did not work: it was used, it expired, or it was not one of the hub's. Make a new one on the hub "
     "(Inbox, Telegram), and open it from your private chat with this bot."
@@ -986,7 +1089,8 @@ class Updates:
             except HTTPException as exc:
                 toast = _words(exc)
                 if exc.status_code == 409:
-                    settled = NO_LONGER_OPEN
+                    settled = _tapped_settled(data, exc) or NO_LONGER_OPEN
+                    toast = settled if settled != NO_LONGER_OPEN else toast
         await self.settle(callback, chat_id, message, toast, settled)
         return word
 

@@ -118,6 +118,14 @@ def proposal_callback(proposal_id: int, answer: str) -> str:
 LINK_ONLY_REF = "link"  # what ends the ref of a message that went as the link alone (``minimal_message``)
 
 
+def parse_ref(ref) -> tuple[int, int, bool] | None:
+    """(chat id, message id, link-only) of a ref ``message_ref`` made, or None for anything else."""
+    found = (
+        re.fullmatch(rf"(-?[0-9]{{1,20}}):([0-9]{{1,20}})(:{LINK_ONLY_REF})?", ref) if isinstance(ref, str) else None
+    )
+    return (int(found[1]), int(found[2]), found[3] is not None) if found else None
+
+
 def message_ref(chat_id: int, message_id: int, *, link_only: bool = False) -> str:
     """How the hub keeps a message it sent (a delivery's external_id): its chat and its id, which Telegram numbers per
     chat, so a reply finds the message of the chat it was sent in and of no other; with ``link_only``, a message that
@@ -221,14 +229,80 @@ def what_waits(kind: str, notice_kind: str | None) -> str:
     return NOTICE_WORDS.get(notice_kind or "", "A notice")
 
 
+# Why a decision's message carries its link alone, by what the hub's prepare says kept it off (``restricted_by``)
+WITHHELD_WORDS = {
+    "label": "Its label {label} keeps it off Telegram: open it on the hub to read and answer it.",
+    "default_label": (
+        "It has no label of its own, and its project (default label {label}) keeps it off Telegram: open it on the "
+        "hub to read and answer it."
+    ),
+}
+LABEL_CHARS = 64  # of a label's name in such a message
+
+
+def withheld_line(restricted_by, label) -> str:
+    """The sentence a link-only message of a decision says why with: its label, or its project's default label, keeps
+    it off the channel; empty for a project that keeps everything off (``restricted_by`` project, or none said)."""
+    words = WITHHELD_WORDS.get(restricted_by) if isinstance(restricted_by, str) else None
+    if words is None:
+        return ""
+    shown = clip(label, LABEL_CHARS) if isinstance(label, str) and label.strip() else "-"
+    return "\n" + escape(words.format(label=shown))
+
+
 def minimal_message(
-    project: str | None, kind: str, notice_kind: str | None, url: str | None, link: str | None
+    project: str | None,
+    kind: str,
+    notice_kind: str | None,
+    url: str | None,
+    link: str | None,
+    *,
+    why: str = "",
+    settled: str | None = None,
 ) -> Message:
-    """The project, the kind of thing and the link: all a restricted project's message holds. It is ``link_only``:
-    a reply to it answers nothing and is told to answer on the hub."""
+    """The project, the kind of thing and the link: all a restricted project's message holds, with ``why`` it holds
+    no more (``withheld_line``) for a decision kept off by its label. It is ``link_only``: a reply to it answers
+    nothing and is told to answer on the hub. With ``settled``, the edit of such a message once its decision no
+    longer waits: what became of it, in words that hold nothing of the decision."""
     head = f"<b>{escape(project)}</b>: " if project else ""
-    text = fit(f"{head}{escape(what_waits(kind, notice_kind))}.", _link_line(url, link))
+    if settled is not None:
+        text = fit(
+            f"{head}{escape(what_waits(kind, notice_kind))}.{why}", _settled_line(settled) + _link_line(url, link)
+        )
+    else:
+        text = fit(f"{head}{escape(what_waits(kind, notice_kind))}.{why}", _link_line(url, link))
     return Message(text, web_button(url), link_only=True)
+
+
+def _settled_line(settled: str) -> str:
+    return f"\n\n<b>{escape(clip(settled, OUTCOME_CHARS))}</b>"
+
+
+SETTLED_WORDS = {  # what the edit of a decision's message says it became, by its state
+    "cancelled": "Decision #{decision_id} was cancelled: it no longer waits for an answer.",
+    "expired": "Decision #{decision_id} expired: it no longer waits for an answer.",
+    "answered": "Decision #{decision_id} was answered: it no longer waits for an answer.",
+}
+
+
+def settled_words(
+    decision_id: int | None,
+    state: str | None,
+    *,
+    answered_by: str | None = None,
+    answered_via: str | None = None,
+    answer_label: str | None = None,
+) -> str:
+    """What the edit of decision ``decision_id``'s message ends with once it is ``state``: who answered it, where and
+    with which option (``answer_label``, or in words without one), as far as the message may say it; the state alone
+    otherwise. Words of an answer are never repeated."""
+    if state == "answered" and answered_by:
+        where = "" if answered_via == "telegram" else (f" via {answered_via}" if answered_via else " on the hub")
+        if answer_label:
+            return f"Answered by {answered_by}{where}: {answer_label}"
+        return f"Answered in words by {answered_by}{where}"
+    words = SETTLED_WORDS.get(state or "", "Decision #{decision_id} no longer waits for an answer.")
+    return words.format(decision_id=decision_id if decision_id is not None else "-")
 
 
 def closed_message(project: str | None, kind: str, item_id: int | None, url: str | None, link: str | None) -> Message:
@@ -258,11 +332,13 @@ def decision_message(
     link: str | None,
     run_kind: str | None = None,
     run_title: str | None = None,
+    settled: str | None = None,
 ) -> Message:
     """A decision: what it is about, its question, its options with the recommended one marked, a button per option
-    and the web's button. Its context stays on the hub. The question gives way first when the text runs long. A
-    decision of an author run or a local run (``run_kind``) without a plan names the run and its title (``run_title``)
-    instead."""
+    and the web's button. Its context stays on the hub. The question gives way first when the text runs long, so the
+    text stays within MAX_TEXT_CHARS with its link whole. A decision of an author run or a local run (``run_kind``)
+    without a plan names the run and its title (``run_title``) instead. With ``settled``, the edit of its message once
+    it no longer waits: the same text ending with what it became, and the web's button alone."""
     where = f"plan {plan_id}" + (f", step {step_key}" if step_key else "") if plan_id else "its plan"
     run = f"Run #{run_id}" if run_id else "A run"
     if run_kind in ("author", "local") and run_id:
@@ -277,7 +353,10 @@ def decision_message(
         listed.append(f"{escape(str(option['key']))}: {escape(label)}" + (" (recommended)" if recommended else ""))
         shown = clip(label, BUTTON_CHARS) + (" (recommended)" if recommended else "")
         buttons.append([{"text": shown, "callback_data": decision_callback(decision_id, str(option["key"]))}])
-    tail = "\n\nTap an option, or reply to this message with your answer in words." + _link_line(url, link)
+    if settled is not None:
+        tail, buttons = _settled_line(settled) + _link_line(url, link), []
+    else:
+        tail = "\n\nTap an option, or reply to this message with your answer in words." + _link_line(url, link)
     rest = len(head) + len("\n".join(listed)) + len(tail) + 4  # and the blank lines between the parts
     asked = clip_html(escape(clip(question, QUESTION_CHARS)), max(MIN_QUESTION_CHARS, MAX_TEXT_CHARS - rest))
     return Message(fit("\n".join([head, "", asked, "", *listed]), tail), buttons + web_button(url))
