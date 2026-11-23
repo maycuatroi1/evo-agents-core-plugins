@@ -83,9 +83,12 @@ versions.
 | 2.5.1 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` (pull request #327, plan kg-retrieval-quality) |
 | 2.8.0 | 1.7 | `e7f93a86111354c123d10f656a9038e1d59a046b` (pull request #784: decisions carry a label, and channel edits) |
 | 2.8.1 | 1.7 | the same |
+| 2.8.2 | 1.8 | `c87a4d7ca6527697b979c501b1996475b498df2b` (pull request #785: a bridged group's sender who linked no account comes in as a guest) |
 
 ### Releases
 
+- **2.8.2**: the code of 2.8.1, every plugin asking API 1.8. None of them uses what 1.8 adds (`bridge_guest`), so
+  they behave as 2.8.1 does on a hub that serves 1.8; a hub that serves 1.7 leaves them out. No migration.
 - **2.8.1**: the same code as 2.8.0, released again because the test of a restricted project's files still
   expected a link-only decision message without the sentence saying which label keeps it off.
 - **2.8.0**: telegram 1.3.0 sends a decision by its label and edits its message to the end. A decision whose label
