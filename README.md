@@ -84,6 +84,9 @@ versions.
 
 ### Releases
 
+- **2.7.1**: telegram 1.2.1 finishes UC DEV-8 r2. A reply to a message that went out link only (its project keeps
+  decisions off Telegram) answers nothing and gets the decision's own link on the hub (`/inbox?decision=<id>`); a reply
+  to a decision cancelled or expired keeps nothing and the member is told which, without repeating the words.
 - **2.7.0**: telegram 1.2.0 finishes an answer in words (UC DEV-8). A reply to a decision's message answers that
   decision alone; the bot edits the message to say who answered it in words, drops its options, keeps its web button,
   and tells the member the answer went to the run. Words that reply to no decision's message answer nothing and get
