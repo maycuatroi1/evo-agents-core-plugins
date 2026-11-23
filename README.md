@@ -82,9 +82,12 @@ versions.
 | 2.6.0 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` |
 | 2.5.1 | 1.7 | `c4e1a884f751cdc2111c4aad3f5bf56ac0de28a9` (pull request #327, plan kg-retrieval-quality) |
 | 2.8.0 | 1.7 | `e7f93a86111354c123d10f656a9038e1d59a046b` (pull request #784: decisions carry a label, and channel edits) |
+| 2.8.1 | 1.7 | the same |
 
 ### Releases
 
+- **2.8.1**: the same code as 2.8.0, released again because the test of a restricted project's files still
+  expected a link-only decision message without the sentence saying which label keeps it off.
 - **2.8.0**: telegram 1.3.0 sends a decision by its label and edits its message to the end. A decision whose label
   (or, without one, its project's default label) keeps it off Telegram goes as the link alone, saying it must be opened
   on the hub because of that label; its buttons, real or forged, answer nothing. Once the decision is answered,
