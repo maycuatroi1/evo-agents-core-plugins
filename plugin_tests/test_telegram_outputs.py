@@ -138,6 +138,8 @@ def test_a_restricted_projects_chat_gets_neither_files_nor_their_names(client, h
     assert bot.fake.media() == []
     texts = [payload["text"] for payload in bot.fake.sent()][1:]
     assert texts == [  # the question alone: the notice of the run's files stays on the hub
-        f"<b>{PROJECT}</b>: A decision waits for your answer.\n\nhttps://hub.test/inbox?decision={asked['id']}",
+        f"<b>{PROJECT}</b>: A decision waits for your answer.\nIt has no label of its own, and its project (default"
+        " label internal) keeps it off Telegram: open it on the hub to read and answer it."
+        f"\n\nhttps://hub.test/inbox?decision={asked['id']}",
     ]
     assert "northwind" not in str(bot.fake.calls)
