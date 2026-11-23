@@ -898,3 +898,97 @@ def test_a_reply_finds_the_decision_of_its_own_chat_only(client, hub, hub_db, bo
     assert say(client, OTHER_CHAT, ANSWER_TEXT, reply_to=sent.message["message_id"]) == "replied"
     assert replies(bot.fake, OTHER_CHAT)[-1] == server_telegram.NO_BLOCKER
     assert decision(client, hub["owner"], decision_id)["state"] == "open"
+
+
+def nothing_kept(client, hub, hub_db, bot, decision_id: int, state: str = "open") -> None:
+    """Decision ``decision_id`` still in ``state`` with no answer, and no audit row, inbox message or edit of it."""
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["state"], shown["answer_text"], shown["answer_option"], shown["answered_via"]) == (
+        state,
+        None,
+        None,
+        None,
+    )
+    assert sql(hub_db, select(func.count()).select_from(tables.run_inbox)) == [(0,)]
+    assert audit_rows(hub_db, "decision") == [] and bot.fake.sent("editMessageText") == []
+
+
+def test_a_reply_to_a_link_only_message_is_refused_with_the_decisions_link(client, hub, hub_db, bot, caplog):
+    unrestricted(hub_db, {"level": "internal", "location": "domestic-only"})  # its messages go as the link alone
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    url = f"https://hub.test/inbox?decision={decision_id}"
+    assert sent.message["text"] == minimal(decision_id)
+    assert telegram_deliveries(hub_db) == [("delivered", 1, f"{OWNER_CHAT}:{sent.message['message_id']}:link", None)]
+    expected = server_telegram.LINK_ONLY_ANSWER.format(decision_id=decision_id, url=url)
+    assert url in expected and "on the hub" in expected
+    caplog.set_level(logging.DEBUG)
+    # Refused while the project is restricted, and still once it is not: the refusal follows the kind of message that
+    # went, as a decision whose own label keeps it off Telegram goes out the same way.
+    for clearance in (None, {"level": "internal", "location": "any"}):
+        if clearance is not None:
+            unrestricted(hub_db, clearance)
+        assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=sent.message) == "replied"
+        told = replies(bot.fake, OWNER_CHAT)[-1]
+        assert told == expected and ANSWER_TEXT not in told
+        nothing_kept(client, hub, hub_db, bot, decision_id)
+    assert ANSWER_TEXT not in caplog.text
+    # A reply to the message Telegram sends back without its button finds the same decision.
+    bare = {"message_id": sent.message["message_id"], "text": sent.message["text"]}
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=bare) == "replied"
+    assert replies(bot.fake, OWNER_CHAT)[-1] == expected
+    # Another member's chat finds nothing of it, and the decision's message with its options still takes words.
+    linked(client, hub["other_web"], OTHER_CHAT)
+    assert say(client, OTHER_CHAT, ANSWER_TEXT, username="other_tg", replied=sent.message) == "replied"
+    assert replies(bot.fake, OTHER_CHAT)[-1] == server_telegram.NO_BLOCKER
+    nothing_kept(client, hub, hub_db, bot, decision_id)
+    other = asked(client, sent.worker, sent.run["id"], question="Which cache should it keep?", step_key="3")
+    assert deliver(client)["delivered"] >= 1
+    full = bot.fake.sent()[-1]
+    assert full["text"] != minimal(other["id"]) and telegram_deliveries(hub_db)[-1][2] == (
+        f"{OWNER_CHAT}:{full['message_id']}"
+    )
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=full) == "replied"
+    assert decision(client, hub["owner"], other["id"])["answered_via"] == "telegram"
+
+
+@pytest.mark.parametrize("state", ["cancelled", "expired"])
+def test_a_reply_to_a_cancelled_or_expired_decision_keeps_nothing_and_says_its_state(
+    client, hub, hub_db, bot, caplog, state
+):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    d = tables.decisions
+    sql(hub_db, update(d).values(state=state).where(d.c.id == decision_id))
+    caplog.set_level(logging.DEBUG)
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=sent.message) == "replied"
+    told = replies(bot.fake, OWNER_CHAT)[-1]
+    assert told == server_telegram.CLOSED_DECISION[state].format(decision_id=decision_id)
+    assert f"Decision #{decision_id}" in told and ("cancelled" if state == "cancelled" else "expired") in told
+    assert ANSWER_TEXT not in told and ANSWER_TEXT not in caplog.text
+    nothing_kept(client, hub, hub_db, bot, decision_id, state)
+
+
+def test_a_free_answer_is_kept_at_the_decisions_label(client, hub, hub_db, bot):
+    # The hub on evo-agents' main keeps no label of a decision's own: a decision reads at its plan's label, which is
+    # the project's by default, and an answer in words is read with it, never at the label of the channel it came by.
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    assert say(client, OWNER_CHAT, ANSWER_TEXT, replied=sent.message) == "replied"
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["answer_option"], shown["answer_text"], shown["answered_via"]) == (None, ANSWER_TEXT, "telegram")
+    path = f"/v1/projects/{PROJECT}/decisions/{decision_id}"
+    plans = tables.plans
+    ((label,),) = sql(hub_db, select(plans.c.label).where(plans.c.plan_id == sent.run["plan_id"]))
+    projects = tables.projects
+    ((default,),) = sql(hub_db, select(projects.c.default_label).where(projects.c.name == PROJECT))
+    assert label == default  # the decision's label: the project's default, its plan having none of its own
+    # A sink below that label reads neither the decision nor its answer, though the answer came by Telegram.
+    unrestricted(hub_db, {"level": "public", "location": "any"})
+    assert client.get(path, headers=hub["owner"]).status_code == 404
+    listed = client.get(f"/v1/projects/{PROJECT}/decisions", headers=hub["owner"]).json()
+    assert ANSWER_TEXT not in str(listed)
+    assert client.get(path, headers={**hub["owner"], "X-Evo-Sink": server_telegram.KIND}).status_code == 404
+    # At the decision's label it reads whole, the answer with it.
+    unrestricted(hub_db)
+    assert client.get(path, headers=hub["owner"]).json()["answer_text"] == ANSWER_TEXT

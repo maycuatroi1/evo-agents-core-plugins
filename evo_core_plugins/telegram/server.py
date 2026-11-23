@@ -42,8 +42,13 @@ came through telegram (``answered_via``), the message replied to is edited to sa
 gone and its web button kept, and the chat is told the answer went to the run. Words that reply to no message, or to a
 message that is no decision's, answer nothing and are told how (NO_BLOCKER); a decision answered already, on Telegram,
 the web or the CLI, changes nothing and the chat is told so (ALREADY_ANSWERED), which holds for an update Telegram
-sends again too; words the hub's filter of secrets catches are kept nowhere and the chat is told so without them
-(HOLDS_SECRET). Before anything of a decision or proposal is read, the hub checks
+sends again too; a decision cancelled or expired changes nothing either, and the chat is told which of the two it is
+(CLOSED_DECISION), the state the hub's refusal names; words the hub's filter of secrets catches are kept nowhere and
+the chat is told so without them (HOLDS_SECRET). A reply to a message that went as the link alone
+(``model.minimal_message``, its ref ending ``:link``) answers nothing, whatever became of its project's clearance since:
+nothing of the decision is read or written, and the chat is told to answer it on the hub, with the link of that
+decision (LINK_ONLY_ANSWER). The chat is never told the words, nor does a log line hold them. Before anything of a
+decision or proposal is read, the hub checks
 that the member holds a grant on its project: a button or reply naming one they do not gets NOT_YOURS, the same words
 whether it exists or not, and a project whose messages are restricted takes no answer from Telegram
 (RESTRICTED_ANSWER), as its messages carry no buttons. A proposal takes no answer while a hub admin has turned the
@@ -52,8 +57,8 @@ feature curator off, as on the web.
 ``TelegramChannel`` is the class the plugin's manifest names for channels of kind ``telegram``. What a notification may
 carry to a chat is the hub's to say (``hub.prepare`` with CLEARED, under customer and domestic-only on each project's
 ladder); it sends the message ``model`` builds, at most one a second to one chat and 30 a second overall (Bot FAQ), and
-answers the chat and Telegram's message_id (``model.message_ref``), kept as the delivery's external_id so a reply in
-that chat finds its decision. A decision or proposal that no longer waits by then goes out as ``model.closed_message``,
+answers the chat and Telegram's message_id (``model.message_ref``, which marks a message that went as the link alone),
+kept as the delivery's external_id so a reply in that chat finds its decision. A decision or proposal that no longer waits by then goes out as ``model.closed_message``,
 never with its text. A 429 waits the retry_after Telegram gives without counting a failed try.
 
 The files of a decision that waits and of a notice of a run's files go with them for a project that is not restricted
@@ -134,6 +139,14 @@ NO_BLOCKER = (
 )
 TOO_LONG = "That answer is too long for the hub (4 KiB at most): answer on the web."
 ALREADY_ANSWERED = "Decision #{decision_id} has its answer already, so nothing changed: your words were not kept."
+CLOSED_DECISION = {  # a decision no longer open that has no answer, by its state: the words are kept nowhere
+    "cancelled": "Decision #{decision_id} was cancelled, so nothing changed: your words were not kept.",
+    "expired": "Decision #{decision_id} expired, so nothing changed: your words were not kept.",
+}
+LINK_ONLY_ANSWER = (
+    "Decision #{decision_id} takes no answer on Telegram: its message here carries its link alone, so your words "
+    "were not kept. Answer it on the hub: {url}"
+)
 HOLDS_SECRET = (
     "That answer looks like it holds a secret (a token, a key or a password), so the hub kept none of it: answer "
     "again without it, and give a credential on the hub."
@@ -534,7 +547,9 @@ class TelegramChannel(hub.Channel):
             if sent is None:  # none of its files went: its message alone, which names them
                 sent = await self._say(bot, chat_id, message)
         message_id = _sent_id(sent)
-        return telegram.message_ref(chat_id, message_id) if message_id is not None else None
+        if message_id is None:
+            return None
+        return telegram.message_ref(chat_id, message_id, link_only=message.link_only)
 
     async def _say(self, bot: BotApi, chat_id: int, message: telegram.Message, reply_to: int | None = None) -> Any:
         """Send ``message`` to the chat, as a reply to message ``reply_to`` when it names one."""
@@ -907,10 +922,16 @@ class Updates:
                 else:
                     ref = telegram.message_ref(chat_id, replied["message_id"])
                     found = await hub.delivered_notification(conn, member, ref)
+                    link_only = None
+                    if found is None:  # a message that went as the link alone keeps a ref of its own
+                        ref = telegram.message_ref(chat_id, replied["message_id"], link_only=True)
+                        found = link_only = await hub.delivered_notification(conn, member, ref)
                     if found is not None and found.kind == "proposal":
                         outcome = WORDS_FOR_DECISIONS
                     elif found is None or found.kind != "decision" or found.decision_id is None:
                         outcome = NO_BLOCKER
+                    elif link_only is not None:  # nothing of the decision is read or written: the hub has it
+                        outcome = self._to_the_hub(found.decision_id)
                     else:
                         decision_id = found.decision_id
                         outcome, answered_by = await self._answer_in_words(conn, member, decision_id, text)
@@ -921,6 +942,11 @@ class Updates:
             await self.edit_answered(chat_id, replied, f"Answered in words by {answered_by}", decision_id)
         await self.say(chat_id, outcome, reply_to=message.get("message_id"))
         return "replied"
+
+    def _to_the_hub(self, decision_id: int) -> str:
+        """What a reply to the link-only message of ``decision_id`` is told: answer it on the hub, by its link."""
+        link = f"/inbox?decision={decision_id}"
+        return LINK_ONLY_ANSWER.format(decision_id=decision_id, url=hub.web_url(self.config, link) or link)
 
     async def _answer_in_words(self, conn, member: hub.Member, decision_id: int, text: str) -> tuple[str, str | None]:
         """What the chat is told of ``text`` as the answer to ``decision_id``, and who answered it when the hub took
@@ -934,6 +960,9 @@ class Updates:
                 return TOO_LONG, None
             if exc.status_code == 409 and str(exc.detail).startswith(f"decision {decision_id} is answered,"):
                 return ALREADY_ANSWERED.format(decision_id=decision_id), None
+            for state, words in CLOSED_DECISION.items():  # the hub's 409 names the state the decision is in
+                if exc.status_code == 409 and str(exc.detail).startswith(f"decision {decision_id} is {state},"):
+                    return words.format(decision_id=decision_id), None
             raise
         return f"Your answer to decision #{decision_id} went to run #{answered.inbox_run}.", member.login
 

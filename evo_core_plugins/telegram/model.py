@@ -15,8 +15,10 @@ its evidence.
 
 What may reach a chat is the hub's to say (``core_plugin_api.prepare`` with the clearance customer, domestic-only,
 below): a restricted project gets messages with its name, the kind of thing that waits and the link, nothing else: no
-question, title, option, context, diff or file name, and no answer button (``minimal_message``). A decision or proposal
-that no longer waits by the time its message goes out says so and nothing more (``closed_message``).
+question, title, option, context, diff or file name, and no answer button (``minimal_message``). Such a message is
+link-only, and its ref says so (``message_ref``): a reply to it is no answer, whatever the project's clearance becomes,
+as a decision kept at a label above the channel's goes out the same way. A decision or proposal that no longer waits by
+the time its message goes out says so and nothing more (``closed_message``).
 
 Every message is HTML, and its text stays within MAX_TEXT_CHARS: a part that may run long is cut before it is
 escaped, or cut between the tags and entities of its HTML (``clip_html``), never inside one, and the parts a message
@@ -113,10 +115,14 @@ def proposal_callback(proposal_id: int, answer: str) -> str:
     return f"p:{proposal_id}:{answer}"
 
 
-def message_ref(chat_id: int, message_id: int) -> str:
+LINK_ONLY_REF = "link"  # what ends the ref of a message that went as the link alone (``minimal_message``)
+
+
+def message_ref(chat_id: int, message_id: int, *, link_only: bool = False) -> str:
     """How the hub keeps a message it sent (a delivery's external_id): its chat and its id, which Telegram numbers per
-    chat, so a reply finds the message of the chat it was sent in and of no other."""
-    return f"{chat_id}:{message_id}"
+    chat, so a reply finds the message of the chat it was sent in and of no other; with ``link_only``, a message that
+    went as the link alone, which takes no answer on Telegram whatever its project's clearance becomes."""
+    return f"{chat_id}:{message_id}:{LINK_ONLY_REF}" if link_only else f"{chat_id}:{message_id}"
 
 
 @dataclass(frozen=True)
@@ -186,10 +192,12 @@ def fit(body: str, tail: str = "", limit: int = MAX_TEXT_CHARS) -> str:
 
 @dataclass(frozen=True)
 class Message:
-    """A message as sendMessage takes it: HTML text and rows of inline buttons."""
+    """A message as sendMessage takes it: HTML text and rows of inline buttons; ``link_only`` when it carries the
+    link alone (``minimal_message``), so that a reply to it is refused and sent to the hub."""
 
     text: str
     buttons: list[list[dict]] = field(default_factory=list)
+    link_only: bool = False
 
     def reply_markup(self) -> dict | None:
         return {"inline_keyboard": self.buttons} if self.buttons else None
@@ -216,9 +224,11 @@ def what_waits(kind: str, notice_kind: str | None) -> str:
 def minimal_message(
     project: str | None, kind: str, notice_kind: str | None, url: str | None, link: str | None
 ) -> Message:
-    """The project, the kind of thing and the link: all a restricted project's message holds."""
+    """The project, the kind of thing and the link: all a restricted project's message holds. It is ``link_only``:
+    a reply to it answers nothing and is told to answer on the hub."""
     head = f"<b>{escape(project)}</b>: " if project else ""
-    return Message(fit(f"{head}{escape(what_waits(kind, notice_kind))}.", _link_line(url, link)), web_button(url))
+    text = fit(f"{head}{escape(what_waits(kind, notice_kind))}.", _link_line(url, link))
+    return Message(text, web_button(url), link_only=True)
 
 
 def closed_message(project: str | None, kind: str, item_id: int | None, url: str | None, link: str | None) -> Message:
