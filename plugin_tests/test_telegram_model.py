@@ -501,3 +501,79 @@ def test_a_file_is_uploaded_with_the_last_part_of_its_name_without_quotes_or_con
     assert telegram.upload_name("") == telegram.upload_name("out/") == "file"
     long = telegram.upload_name("x" * 300 + ".tar.gz")
     assert len(long) == telegram.UPLOAD_NAME_CHARS and long.endswith("x.gz")
+
+
+def test_a_decision_message_within_4096_cuts_its_question_first_and_keeps_its_link_and_buttons_settled_or_not():
+    url = "https://hub.test/inbox?decision=9"
+    asked = {
+        "decision_id": 9,
+        "project": "p",
+        "run_id": 1,
+        "plan_id": "fleet",
+        "step_key": "2",
+        "category": "scope",
+        "question": "<&> " * 3000,
+        "options": OPTIONS,
+        "url": url,
+        "link": "/inbox?decision=9",
+    }
+    whole = telegram.decision_message(**asked)
+    settled = telegram.decision_message(**asked, settled="Answered by owner: " + "&" * 5000)
+    for message in (whole, settled):
+        assert len(message.text) <= telegram.MAX_TEXT_CHARS and well_formed(message.text)
+        assert message.text.endswith(f"\n\n{url}") and "fleet" in message.text  # the link whole, the head kept
+    assert "Tap an option, or reply to this message with your answer in words." in whole.text
+    assert [row[0].get("callback_data") for row in whole.reply_markup()["inline_keyboard"][:2]] == [
+        "d:9:sqlite",
+        "d:9:postgres",
+    ]
+    # Settled: the options go, the hub's button stays, and the outcome is cut to its own bound before the link.
+    assert settled.reply_markup() == {"inline_keyboard": [[{"text": "Open on the hub", "url": url}]]}
+    assert "Tap an option" not in settled.text and "<b>Answered by owner: &amp;" in settled.text
+
+
+@pytest.mark.parametrize(
+    ("by", "label", "why"),
+    [
+        ("label", "internal", "Its label internal keeps it off Telegram"),
+        ("default_label", "customer", "It has no label of its own, and its project (default label customer)"),
+        ("project", "internal", None),
+        (None, None, None),
+    ],
+)
+def test_a_link_only_decision_says_which_label_keeps_it_off_and_nothing_else(by, label, why):
+    url = "https://hub.test/inbox?decision=9"
+    line = telegram.withheld_line(by, label)
+    message = telegram.minimal_message("p", "decision", None, url, "/inbox?decision=9", why=line)
+    assert message.link_only and message.reply_markup() == {
+        "inline_keyboard": [[{"text": "Open on the hub", "url": url}]]
+    }
+    if why is None:
+        assert line == "" and message.text == f"<b>p</b>: A decision waits for your answer.\n\n{url}"
+    else:
+        assert why in message.text and "open it on the hub to read and answer it." in message.text
+    long = telegram.withheld_line("label", "x" * 500)
+    assert len(long) < 200  # a label's name is cut
+
+
+@pytest.mark.parametrize(
+    ("state", "by", "via", "label", "said"),
+    [
+        ("answered", "owner", "telegram", "Keep SQLite", "Answered by owner: Keep SQLite"),
+        ("answered", "owner", None, "Keep SQLite", "Answered by owner on the hub: Keep SQLite"),
+        ("answered", "owner", "slack", "Keep SQLite", "Answered by owner via slack: Keep SQLite"),
+        ("answered", "owner", "telegram", None, "Answered in words by owner"),
+        ("answered", None, None, None, "Decision #9 was answered: it no longer waits for an answer."),
+        ("cancelled", None, None, None, "Decision #9 was cancelled: it no longer waits for an answer."),
+        ("expired", None, None, None, "Decision #9 expired: it no longer waits for an answer."),
+    ],
+)
+def test_the_edit_of_a_decisions_message_says_who_answered_where_with_what_or_its_state(state, by, via, label, said):
+    assert telegram.settled_words(9, state, answered_by=by, answered_via=via, answer_label=label) == said
+
+
+def test_a_message_ref_parses_back_to_its_chat_its_message_and_whether_it_carried_its_link_alone():
+    assert telegram.parse_ref("7001:12") == (7001, 12, False)
+    assert telegram.parse_ref("-1001:12:link") == (-1001, 12, True)
+    for ref in (None, "", "7001", "7001:x", "7001:12:other", 5):
+        assert telegram.parse_ref(ref) is None

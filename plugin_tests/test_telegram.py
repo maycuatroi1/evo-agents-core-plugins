@@ -382,7 +382,7 @@ def test_a_button_answers_the_decision_through_the_same_code_as_the_web(client, 
     ((body,),) = sql(hub_db, select(inbox.c.body).where(inbox.c.decision_id == decision_id))
     assert body.startswith(f"Answer to decision #{decision_id} (architecture)") and "postgres, Move to Postgres" in body
     (row,) = [row for row in audit_rows(hub_db, "decision")]
-    assert row[1].endswith("option=postgres via=telegram") and row[2] == OWNER
+    assert row[1].endswith("option=postgres label=internal via=telegram") and row[2] == OWNER
     a = tables.audit
     assert sql(hub_db, select(a.c.token_id).where(a.c.action == "decision.answer")) == [(None,)]
     (toast,) = bot.fake.sent("answerCallbackQuery")
@@ -396,11 +396,10 @@ def test_a_button_answers_the_decision_through_the_same_code_as_the_web(client, 
 
     # A second press finds it answered: the button says so, and the message drops its options.
     assert press(client, OWNER_CHAT, f"d:{decision_id}:sqlite", sent.message) == "refused"
-    toast = bot.fake.sent("answerCallbackQuery")[-1]["text"]
-    assert f"decision {decision_id} is answered, not open" in toast
-    assert bot.fake.sent("editMessageText")[-1]["text"].endswith(
-        "<b>This is no longer open: it was answered already, or it closed.</b>"
-    )
+    said = server_telegram.TAPPED_SETTLED["answered"].format(decision_id=decision_id)
+    assert bot.fake.sent("answerCallbackQuery")[-1]["text"] == said
+    assert bot.fake.sent("editMessageText")[-1]["text"].endswith(f"<b>{said}</b>")
+    assert decision(client, hub["owner"], decision_id)["answer_option"] == "postgres"
 
 
 def web_button(decision_id: int) -> dict:
@@ -547,7 +546,7 @@ def test_a_restricted_project_gets_its_name_the_kind_and_the_link_only(client, h
     sent = sent_decision(client, hub, bot)
     decision_id = sent.decision["id"]
     url = f"https://hub.test/inbox?decision={decision_id}"
-    assert sent.message["text"] == f"<b>{PROJECT}</b>: A decision waits for your answer.\n\n{url}"
+    assert sent.message["text"] == f"<b>{PROJECT}</b>: A decision waits for your answer.{DEFAULT_WHY}\n\n{url}"
     assert sent.message["reply_markup"] == {"inline_keyboard": [[{"text": "Open on the hub", "url": url}]]}
     for word in (QUESTION, OPTIONS[0]["label"], OPTIONS[1]["label"], "fleet", "Why"):
         assert word not in sent.message["text"]
@@ -692,8 +691,17 @@ def test_a_hub_admin_points_the_webhook_at_the_hub_with_the_secret(client, hub, 
 # Failing closed: what the hub's review of this channel found, each with the check that keeps it fixed
 
 
-def minimal(decision_id: int) -> str:
-    return f"<b>{PROJECT}</b>: A decision waits for your answer.\n\nhttps://hub.test/inbox?decision={decision_id}"
+# What a link-only message of a decision without a label of its own says why with: its project's default label is
+# internal (test_runs' project), and the project's hub sink keeps it off.
+DEFAULT_WHY = (
+    "\nIt has no label of its own, and its project (default label internal) keeps it off Telegram: open it on the hub "
+    "to read and answer it."
+)
+
+
+def minimal(decision_id: int, why: str = DEFAULT_WHY) -> str:
+    """The link-only message of decision ``decision_id``, with ``why`` it holds no more."""
+    return f"<b>{PROJECT}</b>: A decision waits for your answer.{why}\n\nhttps://hub.test/inbox?decision={decision_id}"
 
 
 def test_a_hub_sink_above_customer_without_a_level_or_missing_gets_the_project_and_the_link_only(
@@ -992,3 +1000,240 @@ def test_a_free_answer_is_kept_at_the_decisions_label(client, hub, hub_db, bot):
     # At the decision's label it reads whole, the answer with it.
     unrestricted(hub_db)
     assert client.get(path, headers=hub["owner"]).json()["answer_text"] == ANSWER_TEXT
+
+
+# A decision by its label, and the edit of its message once it is answered, cancelled or expired
+
+
+def channel_sink(db, level: str) -> None:
+    """The project's sink of kind channel named telegram, cleared for ``level`` at any location: what a decision with
+    a label of its own is judged by on this channel."""
+    sinks, p = tables.project_sinks, tables.projects
+    ((project_id,),) = sql(db, select(p.c.id).where(p.c.name == PROJECT))
+    clearance = {"level": level, "location": "any"}
+    row = {"project_id": project_id, "sink_id": server_telegram.KIND, "kind": "channel", "clearance": clearance}
+    sql(db, insert(sinks).values(**row))
+
+
+def hub_url(decision_id: int) -> str:
+    return f"https://hub.test/inbox?decision={decision_id}"
+
+
+def inbox_count(db) -> int:
+    return sql(db, select(func.count()).select_from(tables.run_inbox))[0][0]
+
+
+def bot_messages(fake: FakeTelegram) -> list[dict]:
+    """The messages the bot sent with buttons: a decision's, or its edit sent anew, and not its replies."""
+    return [payload for payload in fake.sent() if "reply_markup" in payload]
+
+
+def due_now(db) -> None:
+    sql(db, update(DELIVERIES).values(next_at=func.now()).where(DELIVERIES.c.state == "pending"))
+
+
+def test_label_a_decision_the_channels_sink_clears_goes_whole_to_the_linked_private_chat_only(client, hub, hub_db, bot):
+    unrestricted(hub_db, {"level": "customer", "location": "any"})  # the hub sink keeps a decision without a label off
+    channel_sink(hub_db, "internal")
+    linked(client, hub["owner_web"])
+    linked(client, hub["other_web"], OTHER_CHAT)
+    worker, run = started(client, hub)
+    made = asked(client, worker, run["id"], label="internal")
+    assert deliver(client)["failed"] == 0
+    (message,) = bot_messages(bot.fake)
+    assert message["chat_id"] == OWNER_CHAT  # the private chat of the member asked, never another's
+    text, decision_id = message["text"], made["id"]
+    assert f"Run #{run['id']} of {PROJECT} asks a decision" in text and "fleet" in text and QUESTION in text
+    assert "Tap an option, or reply to this message with your answer in words." in text
+    assert text.endswith(f"\n\n{hub_url(decision_id)}") and len(text) <= 4096
+    assert message["reply_markup"]["inline_keyboard"] == [
+        [{"text": "Keep SQLite", "callback_data": f"d:{decision_id}:sqlite"}],
+        [{"text": "Move to Postgres (recommended)", "callback_data": f"d:{decision_id}:postgres"}],
+        [{"text": "Open on the hub", "url": hub_url(decision_id)}],
+    ]
+    assert telegram_deliveries(hub_db) == [("delivered", 1, f"{OWNER_CHAT}:{message['message_id']}", None)]
+
+
+@pytest.mark.parametrize("by", ["label", "default_label"])
+def test_label_a_decision_kept_off_goes_as_its_link_and_a_forged_button_writes_nothing(client, hub, hub_db, bot, by):
+    if by == "label":  # its own label internal, above the channel's sink
+        channel_sink(hub_db, "public")
+        given, why = (
+            {"label": "internal"},
+            ("\nIts label internal keeps it off Telegram: open it on the hub to read and answer it."),
+        )
+    else:  # no label of its own, and a project whose hub sink keeps it off
+        unrestricted(hub_db, {"level": "customer", "location": "any"})
+        given, why = {}, DEFAULT_WHY
+    linked(client, hub["owner_web"])
+    worker, run = started(client, hub)
+    decision_id = asked(client, worker, run["id"], **given)["id"]
+    assert deliver(client)["failed"] == 0
+    (message,) = bot_messages(bot.fake)
+    assert message["chat_id"] == OWNER_CHAT and message["text"] == minimal(decision_id, why)
+    assert message["reply_markup"] == web_button(decision_id)
+    for word in (QUESTION, OPTIONS[0]["label"], OPTIONS[1]["label"], "fleet", "Tap an option"):
+        assert word not in message["text"]
+    assert telegram_deliveries(hub_db)[0][2] == f"{OWNER_CHAT}:{message['message_id']}:link"
+    # A button made up with its id, as no such button went, is refused before the hub reads anything of it.
+    forged = {**message, "reply_markup": {"inline_keyboard": [[{"text": "x", "callback_data": f"d:{decision_id}:x"}]]}}
+    assert press(client, OWNER_CHAT, f"d:{decision_id}:postgres", forged) == "refused"
+    toast = bot.fake.sent("answerCallbackQuery")[-1]["text"]
+    if by == "label":
+        assert (
+            toast == f"answer this on the hub: the label internal of decision {decision_id} keeps it off this channel"
+        )
+    else:
+        assert toast == server_telegram.RESTRICTED_ANSWER
+    nothing_kept(client, hub, hub_db, bot, decision_id)
+
+
+def test_edit_a_button_answers_through_the_hub_and_its_edit_names_the_option_once(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id, message_id = sent.decision["id"], sent.message["message_id"]
+    assert press(client, OWNER_CHAT, f"d:{decision_id}:postgres", sent.message) == "answered"
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["answer_option"], shown["answered_by"], shown["answered_via"]) == ("postgres", OWNER, "telegram")
+    assert len(bot.fake.sent("editMessageText")) == 1  # the webhook's own, at once
+    assert deliver(client)["delivered"] == 1  # the hub's edit of the message it sent
+    edited = bot.fake.sent("editMessageText")[-1]
+    assert (edited["chat_id"], edited["message_id"]) == (OWNER_CHAT, message_id)
+    assert f"<b>Answered by {OWNER}: Move to Postgres</b>\n\n{hub_url(decision_id)}" in edited["text"]
+    assert QUESTION in edited["text"] and "Tap an option" not in edited["text"]
+    assert edited["reply_markup"] == web_button(decision_id)
+    assert len(bot_messages(bot.fake)) == 1  # no new message
+    ref = f"{OWNER_CHAT}:{message_id}"
+    assert telegram_deliveries(hub_db) == [("delivered", 1, ref, None), ("delivered", 1, ref, None)]
+    assert deliver(client)["delivered"] == 0 and len(bot.fake.sent("editMessageText")) == 2  # one edit, once
+    assert len(audit_rows(hub_db, "decision")) == 1 and inbox_count(hub_db) == 1
+
+
+@pytest.mark.parametrize("state", ["cancelled", "expired"])
+def test_edit_a_cancelled_or_expired_decision_drops_its_options_keeps_the_hub_button_and_a_tap_writes_nothing(
+    client, hub, hub_db, bot, state
+):
+    sent = sent_decision(client, hub, bot)
+    decision_id, message_id = sent.decision["id"], sent.message["message_id"]
+    d = tables.decisions
+    sql(hub_db, update(d).values(state=state).where(d.c.id == decision_id))
+    assert deliver(client)["delivered"] == 1
+    (edited,) = bot.fake.sent("editMessageText")
+    words = model_settled(decision_id, state)
+    assert (edited["chat_id"], edited["message_id"]) == (OWNER_CHAT, message_id)
+    assert edited["text"].endswith(f"<b>{words}</b>\n\n{hub_url(decision_id)}") and state in words
+    assert edited["reply_markup"] == web_button(decision_id)
+    # A button of it, pressed after, keeps nothing and says what became of it.
+    assert press(client, OWNER_CHAT, f"d:{decision_id}:postgres", sent.message) == "refused"
+    said = server_telegram.TAPPED_SETTLED[state].format(decision_id=decision_id)
+    assert bot.fake.sent("answerCallbackQuery")[-1]["text"] == said
+    assert bot.fake.sent("editMessageText")[-1]["text"].endswith(f"<b>{said}</b>")
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["state"], shown["answer_option"], shown["answered_via"]) == (state, None, None)
+    assert audit_rows(hub_db, "decision") == [] and inbox_count(hub_db) == 0
+
+
+def model_settled(decision_id: int, state: str) -> str:
+    from evo_core_plugins.telegram import model as plugin_model
+
+    return plugin_model.SETTLED_WORDS[state].format(decision_id=decision_id)
+
+
+def test_edit_of_a_link_only_message_says_its_state_and_nothing_of_the_decision(client, hub, hub_db, bot):
+    channel_sink(hub_db, "public")
+    linked(client, hub["owner_web"])
+    worker, run = started(client, hub)
+    decision_id = asked(client, worker, run["id"], label="internal")["id"]
+    deliver(client)
+    answered_decision(client, hub["owner"], decision_id, option="sqlite")
+    assert deliver(client)["delivered"] >= 1
+    (edited,) = bot.fake.sent("editMessageText")
+    why = "\nIts label internal keeps it off Telegram: open it on the hub to read and answer it."
+    words = model_settled(decision_id, "answered")
+    head = f"<b>{PROJECT}</b>: A decision waits for your answer.{why}"
+    assert edited["text"] == f"{head}\n\n<b>{words}</b>\n\n{hub_url(decision_id)}"
+    assert OWNER not in edited["text"] and "SQLite" not in edited["text"]
+    assert edited["reply_markup"] == web_button(decision_id)
+
+
+def test_button_of_a_decision_answered_elsewhere_keeps_that_answer_and_the_message_says_so(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    answered_decision(client, hub["owner"], decision_id, option="sqlite")  # on the web
+    assert press(client, OWNER_CHAT, f"d:{decision_id}:postgres", sent.message) == "refused"
+    said = server_telegram.TAPPED_SETTLED["answered"].format(decision_id=decision_id)
+    assert bot.fake.sent("answerCallbackQuery")[-1]["text"] == said
+    assert bot.fake.sent("editMessageText")[-1]["text"].endswith(f"<b>{said}</b>")
+    shown = decision(client, hub["owner"], decision_id)
+    assert (shown["answer_option"], shown["answered_via"]) == ("sqlite", None)
+    assert len(audit_rows(hub_db, "decision")) == 1 and inbox_count(hub_db) == 1
+    # The hub's edit says who answered it, where and with which option.
+    deliver(client)
+    assert f"<b>Answered by {OWNER} on the hub: Keep SQLite</b>" in bot.fake.sent("editMessageText")[-1]["text"]
+
+
+def test_button_the_same_update_delivered_twice_answers_once(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    chat, sender = private_chat(OWNER_CHAT)
+    update_ = button_update(next(updates), chat, sender, f"d:{decision_id}:postgres", sent.message)
+    assert handled(client, update_) == "answered"
+    assert handled(client, update_) == "refused"  # Telegram sent it again: the hub's 409, no second answer
+    said = server_telegram.TAPPED_SETTLED["answered"].format(decision_id=decision_id)
+    assert bot.fake.sent("answerCallbackQuery")[-1]["text"] == said
+    assert len(audit_rows(hub_db, "decision")) == 1 and inbox_count(hub_db) == 1
+    assert decision(client, hub["owner"], decision_id)["answer_option"] == "postgres"
+
+
+def test_edit_that_fails_after_the_answer_is_tried_again_by_the_hub_and_answers_nothing_again(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    bot.fake.fail_next(502, "Bad Gateway", method="editMessageText")  # the webhook's edit: logged, the answer kept
+    assert press(client, OWNER_CHAT, f"d:{decision_id}:postgres", sent.message) == "answered"
+    bot.fake.fail_next(429, "Too Many Requests: retry after 3", retry_after=3, method="editMessageText")
+    assert deliver(client) == {"delivered": 0, "retried": 1, "failed": 0}
+    edit = telegram_deliveries(hub_db)[-1]
+    assert edit[:2] == ("pending", 0) and "429" in edit[3]  # RetryAfter: not a failed try
+    due_now(hub_db)
+    bot.fake.fail_next(502, "Bad Gateway", method="editMessageText")
+    assert deliver(client) == {"delivered": 0, "retried": 1, "failed": 0}
+    assert telegram_deliveries(hub_db)[-1][:2] == ("pending", 1)  # a failed try, which the hub backs off
+    due_now(hub_db)
+    assert deliver(client) == {"delivered": 1, "retried": 0, "failed": 0}
+    ref = f"{OWNER_CHAT}:{sent.message['message_id']}"
+    assert telegram_deliveries(hub_db)[-1][:3] == ("delivered", 2, ref)
+    assert f"Answered by {OWNER}: Move to Postgres" in bot.fake.sent("editMessageText")[-1]["text"]
+    assert len(audit_rows(hub_db, "decision")) == 1 and inbox_count(hub_db) == 1
+
+
+def test_edit_telegram_finds_the_same_already_counts_as_done(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    assert press(client, OWNER_CHAT, f"d:{sent.decision['id']}:postgres", sent.message) == "answered"
+    bot.fake.fail_next(
+        400, "Bad Request: message is not modified: specified new message content is the same", method="editMessageText"
+    )
+    assert deliver(client) == {"delivered": 1, "retried": 0, "failed": 0}
+    assert telegram_deliveries(hub_db)[-1] == ("delivered", 1, f"{OWNER_CHAT}:{sent.message['message_id']}", None)
+    assert len(bot_messages(bot.fake)) == 1
+
+
+def test_edit_of_a_message_telegram_no_longer_edits_goes_as_a_new_message(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    sql(hub_db, update(tables.decisions).values(state="expired").where(tables.decisions.c.id == decision_id))
+    bot.fake.fail_next(400, "Bad Request: message to edit not found", method="editMessageText")
+    assert deliver(client) == {"delivered": 1, "retried": 0, "failed": 0}
+    again = bot.fake.sent()[-1]
+    assert again["message_id"] != sent.message["message_id"] and again["reply_markup"] == web_button(decision_id)
+    assert again["text"].endswith(f"<b>{model_settled(decision_id, 'expired')}</b>\n\n{hub_url(decision_id)}")
+    assert telegram_deliveries(hub_db)[-1] == ("delivered", 1, f"{OWNER_CHAT}:{again['message_id']}", None)
+
+
+def test_edit_of_a_chat_the_member_no_longer_links_leaves_it_as_it_is(client, hub, hub_db, bot):
+    sent = sent_decision(client, hub, bot)
+    decision_id = sent.decision["id"]
+    linked(client, hub["owner_web"], OTHER_CHAT)  # the owner's chat is another one now
+    answered_decision(client, hub["owner"], decision_id, option="sqlite")
+    assert deliver(client) == {"delivered": 1, "retried": 0, "failed": 0}
+    assert bot.fake.sent("editMessageText") == []
+    assert all(payload["chat_id"] != OTHER_CHAT or "reply_markup" not in payload for payload in bot.fake.sent())
+    assert telegram_deliveries(hub_db)[-1] == ("delivered", 1, f"{OWNER_CHAT}:{sent.message['message_id']}", None)

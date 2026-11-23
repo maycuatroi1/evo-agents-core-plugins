@@ -51,6 +51,43 @@ the words of an answer.
 The bot's messages are in English. The refusal of secrets and `answered_via` come from evo-agents (plan
 dev8-telegram-free-answer step 1); an older hub keeps no channel and filters nothing.
 
+## A decision by its label, and the edit of its message (1.3.0)
+
+From evo-agents `e7f93a86` (pull request #784, API still 1.7) a decision may carry a label, and the hub's `prepare`
+judges it by that label against the project's sink of kind `channel` named `telegram` (evo-agents'
+`docs/notifications.md`, Decisions on channels). The plugin reads what `prepare` leaves in `extra`:
+
+- **Content.** A decision the sink clears goes to the member's linked private chat, never to a group: the run and its
+  plan and step (or the author run's title), the question as a summary, one button per option, the line that says a
+  reply answers in words, and the link to the decision. The text stays within 4,096 characters: the question is cut
+  first, and the link and the buttons stay whole.
+- **The link alone, because of the label.** `restricted: true` with `restricted_by` `label` (its own label keeps it
+  off) or `default_label` (it has none, and its project's default label keeps it off) sends the project, that a decision
+  waits, one sentence that it must be opened on the hub because of that label (`withheld_line`), and the link: no
+  question, option or button. A button pressed with that decision's id, forged or old, is refused by the hub (403)
+  before anything is read, and nothing is written. `restricted_by` `project` keeps the message it had.
+- **The edit.** Once the decision is answered, cancelled or expired, the hub's outbox gives the channel one more
+  delivery whose `extra.edit` names the message (`external_id`) and the decision's `state`. The channel edits that
+  message (editMessageText) instead of sending one: its options go, its *Open on the hub* button stays, and it ends with
+  *Answered by <login>: <option>* (with *on the hub* or *via <channel>* when it came another way), *Answered in words by
+  <login>*, or that the decision was cancelled or expired (`settled_words`). A link-only message gets the state alone.
+  Telegram's *message is not modified* counts as done; a message it can no longer edit gets the edit as a new message;
+  a message of a chat the member no longer links is left as it is.
+- **Errors go back to the hub as what they are.** A 429 is `RetryAfter` with Telegram's `retry_after`, a network error
+  or another refusal a failed try that the hub backs off, a blocked bot `ChannelGone`. The hub tries a decision's
+  delivery and its edit for 30 minutes from the first try. A failed edit after an answer was kept never answers again:
+  the answer is the hub's, and only the edit is tried again.
+- **Buttons.** A button answers through `hub.answer_decision` as the member the chat is linked to; the bot answers the
+  button and edits the message at once, and the hub's edit follows. A decision answered already, on the web, the CLI or
+  another channel (409), keeps its answer: the button says so and the message ends with it (`TAPPED_SETTLED`); the
+  hub's edit names who answered it and with which option. A cancelled or expired decision keeps nothing and its message
+  says which. A chat not linked, or a member the decision is not asked of, is refused and nothing changes; pressing the
+  same button again, or Telegram delivering the same update again, finds the decision answered (409) and is no second
+  answer.
+
+The tests are in `plugin_tests/test_telegram.py`, one for each of these branches (`test_label_*`, `test_edit_*`,
+`test_button_*`), and the words and the cut of these messages in `plugin_tests/test_telegram_model.py`.
+
 ## Setting up the bot
 
 The variables `EVO_HUB_TELEGRAM_*` and the command `evo-agents hub admin telegram [--set-webhook]` stay as they were
