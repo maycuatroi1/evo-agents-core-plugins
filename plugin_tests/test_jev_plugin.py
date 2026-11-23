@@ -624,9 +624,9 @@ def test_jev_optional_every_plugin_of_the_distribution_requires_the_same_api():
 
     versions = {name: importlib.import_module(f"evo_core_plugins.{name}").API for name in PLUGINS}
     assert "jev" in versions and set(versions.values()) == {
-        hub_api.API_VERSION == (1, 7) and (1, 7) or hub_api.API_VERSION
+        hub_api.API_VERSION == (1, 8) and (1, 8) or hub_api.API_VERSION
     }
-    assert versions["jev"] == (1, 7)
+    assert versions["jev"] == (1, 8)
 
 
 def test_jev_optional_the_code_the_tests_and_the_docs_use_fictional_names():
