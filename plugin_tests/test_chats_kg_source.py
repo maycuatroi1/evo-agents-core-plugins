@@ -24,6 +24,7 @@ the agent of alpha alone, chat three no agent at all.
 from __future__ import annotations
 
 import asyncio
+import json
 from importlib.metadata import EntryPoint
 from pathlib import Path
 from types import SimpleNamespace
@@ -471,3 +472,69 @@ def test_chats_node_kinds_are_hub_kinds():
     assert {ITEM_KIND_TO_NODE[k] for k in ("chat", "thread", "message")} == {"Chat", "ChatThread", "ChatMessage"}
     assert {"Chat", "ChatThread", "ChatMessage"} <= set(HUB_KINDS)
     assert Path(chats_kg.__file__).parent.name == "chats"
+
+
+def two_rooms(hub) -> SimpleNamespace:
+    """Two chats of alpha with no agent of beta and no member in common: bob's and erin's, each saying what the
+    other does, in a graph the worker built."""
+    bobs, erins = chat(hub, "Bob room", [A]), chat(hub, "Erin room", [A])
+    for room, member in ((bobs, "bob"), (erins, "erin")):
+        done(hub.client.delete(f"/v1/chats/{room}/people/dave", headers=hub.alice), 204)
+        done(hub.client.put(f"/v1/chats/{room}/people/{member}", headers=hub.alice))
+    mb = say(hub, bobs, "bob", "Bob asks about the rollback in docs/runbook.md")
+    me = say(hub, erins, "erin", "Erin asks about the rollback in docs/runbook.md")
+    run_jobs(hub.db, hub.s3, hub.worker_dir)
+    return SimpleNamespace(bobs=bobs, erins=erins, mb=message(mb), me=message(me))
+
+
+def test_chats_a_node_two_chats_reveal_shows_to_a_member_of_either_with_only_his_chats_edges(hub):
+    """Criteria a1 and a7 of plan kg-sound-fast-optimal: the graph node of the source (``source:plugin.chats``) is
+    revealed by each of the two chats, and its edge to a message only by the chat of that message. The label
+    keeps one guard for each chat, so a member of one still reads the node, as he did not when the audiences of its
+    revealers were joined to one set."""
+    said = two_rooms(hub)
+    shared, own = f"source:{SOURCE}", {"bob": said.mb, "erin": said.me}
+    other = {"bob": said.me, "erin": said.mb}
+    rooms = {"bob": f"chat:{said.bobs}", "erin": f"chat:{said.erins}"}
+
+    graph = kept_graph(hub)
+    (found,) = [n for n in graph.nodes if n[0] == shared]
+    assert json.loads(found[10]) == [rooms["bob"]] and {g["aud"][0] for g in json.loads(found[11])} == set(
+        rooms.values()
+    )  # the old column of the first chat and the guards of both
+
+    # through the api: each reads the shared node, his own message and what the message mentions; nothing of the other
+    for member in ("bob", "erin"):
+        assert node(hub, shared, member) is not None, member
+        assert node(hub, own[member], member) is not None, member
+        assert node(hub, other[member], member) is None, member
+        assert own[member] in neighbours(hub, shared, member), member
+        assert other[member] not in neighbours(hub, shared, member) | neighbours(hub, RUNBOOK, member), member
+        assert own[member] in neighbours(hub, RUNBOOK, member), member
+        assert shared in searched(hub, "plugin.chats", member), member
+
+    # a member of neither chat, with a grant on the project, sees nothing of the chats, nor the shared node
+    for reader in ("owner",):
+        assert not any(node(hub, found, reader) for found in (shared, said.mb, said.me)), reader
+        assert not neighbours(hub, RUNBOOK, reader) & {said.mb, said.me}, reader
+        assert shared not in searched(hub, "plugin.chats", reader), reader
+
+    # and so does the snapshot the coordinator holds, for the audiences of the hub's reads
+    async def read() -> list:
+        engine = make_engine(hub.db)
+        coordinator = kg_snapshots.SnapshotCoordinator(engine)
+        try:
+            audiences = (rooms["bob"], rooms["erin"])
+            readers = (frozenset({audiences[0]}), frozenset({audiences[1]}), frozenset())
+            return [await coordinator.view(project_id(hub), reader) for reader in readers]
+        finally:
+            await coordinator.close()
+            await engine.dispose()
+
+    bob, erin, nobody = asyncio.run(read())
+    for view, mine, theirs in ((bob, said.mb, said.me), (erin, said.me, said.mb)):
+        assert view.node(shared) is not None and view.node(mine) is not None
+        assert view.node(theirs) is None and view.degree(theirs) == 0
+        assert view.degree(shared) >= 1
+    assert nobody.node(shared) is None and nobody.degree(shared) == 0
+    assert nobody.node(said.mb) is None and nobody.node(said.me) is None
