@@ -181,6 +181,12 @@ thread of the hub:
   among them, stay out without another word.
 - A person's message in the thread gives the bots 4 more turns.
 
+A bot that streams its answer (Hermes, for one) sends a cursor first, `▉`, and edits the message into the answer.
+From 1.4.1 the bridge holds a bot's message that ends with such a cursor (any of `▉▊▋▌▍▎▏█`) and carries the edit
+that took the cursor off, once; its turn counts then. This needs the update `edited_message` in the webhook's
+`allowed_updates`, which `--set-webhook` sets. A person's edit, and a bot's edit of a message that came in already,
+stay on Telegram.
+
 The bridge remembers the thread of its last 100 group messages and the turns of its last 30 threads; a bot's reply to
 a message older than that starts a new chain.
 

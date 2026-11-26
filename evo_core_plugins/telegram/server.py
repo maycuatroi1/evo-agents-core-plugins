@@ -108,7 +108,8 @@ log = logging.getLogger(__name__)
 KIND = "telegram"  # notification_channels.kind, and the audit rows' "via=telegram"
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
 WEBHOOK_PATH = "/v1/telegram/webhook"
-ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]  # the last: the bot left a group
+# my_chat_member: the bot left a group; edited_message: a linked bot that streams its answer finishes it by an edit
+ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member"]
 MAX_UPDATE_BYTES = 1024 * 1024
 CALL_TIMEOUT_SECONDS = 10.0
 UPLOAD_TIMEOUT_SECONDS = 25.0  # a call that uploads files, within the hub's 30 seconds for a delivery
@@ -939,6 +940,11 @@ class Updates:
             from . import bridge  # its module imports this one
 
             return await bridge.member_changed(self, member_change)
+        edited = update.get("edited_message")
+        if isinstance(edited, dict) and not isinstance(message, dict) and not isinstance(callback, dict):
+            from . import bridge  # its module imports this one
+
+            return await bridge.edited(self, edited)
         if isinstance(callback, dict):
             chat_id = _object(_object(callback.get("message")).get("chat")).get("id")
         elif isinstance(message, dict):
