@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, insert, select, update
 
 from evo_agents.hub import chat_bridge_events, plugin_events, tables
+from evo_agents.hub.server import chat_store
 from evo_agents.hub.server.app import create_app
 from evo_core_plugins.telegram import bridge, bridge_model, server
 from evo_core_plugins.telegram import model as telegram
@@ -718,3 +719,50 @@ def test_a_streamed_bot_answer_comes_in_once_from_the_edit_that_finished_it(brid
     assert bodies == ["[turn 1/4] The release is on Friday.", "[turn 2/4] no stream here"]
     assert bridge_model.streaming("thinking ▉ ") and not bridge_model.streaming("done.")
     assert "edited_message" in server.ALLOWED_UPDATES
+
+
+def agent_answers(bridged, chat: dict, root_id: int, body: str) -> int:
+    """A message of the chat's agent in thread ``root_id``, handed to the bridge as the hub hands a new message."""
+    db, m, members = bridged.db, tables.chat_messages, tables.chat_members
+    ((profile_id,),) = sql(
+        db, select(members.c.profile_id).where(members.c.chat_id == chat["id"], members.c.profile_id.is_not(None))
+    )
+    ((label,),) = sql(db, select(m.c.label).where(m.c.id == root_id))
+
+    async def answer(conn):
+        seq = await chat_store.next_seq(conn, chat["id"])
+        row = {"chat_id": chat["id"], "seq": seq, "thread_root_id": root_id, "author_profile_id": profile_id}
+        message_id = (
+            await conn.execute(insert(m).values(**row, body=body, label=label).returning(m.c.id))
+        ).scalar_one()
+        said = {"chat_id": chat["id"], "message_id": message_id, "seq": seq, "thread_root_id": root_id, "by": "agent"}
+        assert await chat_bridge_events.message(conn, chat["id"], said) == 1
+        return message_id
+
+    message_id = on_hub(bridged.client, answer)
+    deliver_events(bridged.client)
+    return message_id
+
+
+def test_the_agents_answer_to_a_bot_replies_to_the_bots_message_until_a_person_writes(bridged):
+    client, fake = bridged.client, bridged.fake
+    chat = peer_linked(bridged)
+    outcome, asked = in_group(client, f"@{BOT} what is due on Friday?", PEER_BOT)
+    assert outcome == "bridged_in"
+    (question,) = came_in(bridged, chat)
+    agent_answers(bridged, chat, question["id"], "the release")
+    (answer,) = [p for p in to_group(fake) if "the release" in p.get("text", "")]
+    assert answer["reply_parameters"]["message_id"] == asked
+    outcome, again = in_group(client, "and after it?", PEER_BOT, reply_to=answer["message_id"])
+    assert outcome == "bridged_in"
+    agent_answers(bridged, chat, question["id"], "the retro")
+    (second,) = [p for p in to_group(fake) if "the retro" in p.get("text", "")]
+    assert second["reply_parameters"]["message_id"] == again  # the bot's latest message
+    # A person writes in the thread: the agent answers the thread again.
+    assert in_group(client, "thanks both", reply_to=answer["message_id"])[0] == "bridged_in"
+    agent_answers(bridged, chat, question["id"], "you are welcome")
+    (third,) = [p for p in to_group(fake) if "you are welcome" in p.get("text", "")]
+    assert third["reply_parameters"]["message_id"] == asked  # the thread's first group message
+    state = bridge_model.bot_spoke({}, 7, 501)
+    assert bridge_model.bot_last(state, 7) == 501 and bridge_model.bot_last(state, 8) is None
+    assert bridge_model.bot_last(bridge_model.spoke(state, 7, OWNER), 7) is None

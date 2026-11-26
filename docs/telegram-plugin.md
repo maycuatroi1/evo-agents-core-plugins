@@ -187,6 +187,11 @@ that took the cursor off, once; its turn counts then. This needs the update `edi
 `allowed_updates`, which `--set-webhook` sets. A person's edit, and a bot's edit of a message that came in already,
 stay on Telegram.
 
+From 1.4.2 the agent's message in a thread where a bot spoke last (since a person did) replies to that bot's
+message, not to the thread's first group message, so the bot gets it even when only the hub's bot has
+Bot-to-Bot Communication Mode on: a bot always sees another bot's reply to its own message. A person's message in the
+thread makes the agent answer the thread again.
+
 The bridge remembers the thread of its last 100 group messages and the turns of its last 30 threads; a bot's reply to
 a message older than that starts a new chain.
 
