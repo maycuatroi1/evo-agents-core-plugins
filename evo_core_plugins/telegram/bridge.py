@@ -20,11 +20,13 @@ Another bot of the group (Telegram hands a bot the messages of other bots once B
 in @BotFather) comes in only when a hub admin linked it to a member with no web session (``PUT
 /v1/admin/users/{login}/channels/telegram`` with its ``user_id``): then as that member, like a person, so ``@<bot>``
 in its message starts the chat's agent and its reply to the agent's message continues that thread. A bot linked to
-no member is never answered and stays out, and a bot's ``/link``, ``/unlink`` or ``/start`` does nothing, so two
-bots cannot talk each other into a loop or take the bridge off. In one thread of the hub bots take at most
-``bridge_model.MAX_BOT_TURNS`` turns after a person last wrote there, each marked ``[turn n/4]``; the next ends the
-chain: the group is told once, naming the person who opened it, and the bots' messages there stay out until a person
-writes in the thread again.
+no member is never answered and stays out, and a bot's ``/link``, ``/unlink``, ``/botturns`` or ``/start`` does
+nothing, so two bots cannot talk each other into a loop or take the bridge off. In one thread of the hub bots take at
+most ``bridge_model.bot_turn_limit`` turns after a person last wrote there (``MAX_BOT_TURNS``, 4, unless the group
+set another bound), each marked ``[turn n/4]``; the next ends the chain: the group is told once, naming the person
+who opened it, and the bots' messages there stay out until a person writes in the thread again. ``/botturns <n>``
+sets the bound of the group and ``/botturns off`` takes it off (marks ``[turn n]``), from an admin of the group or a
+person linked to the hub; ``/botturns`` alone says what it is. Setting it forgets the chains counted so far.
 
 Out to the group (the event): a new message of the chat as ``hub.bridge_message`` lets it out (None: nothing goes),
 once, as HTML within 4096 characters, cut with a link to the hub when long; a run's progress as one message that is
@@ -81,6 +83,8 @@ LINK_FAILED = (
 NOT_BRIDGED = "This group is not bridged to a chat of the hub."
 UNLINKED = "This group is no longer bridged to the hub."
 ADMINS_ONLY = "Only an admin of this group takes the bridge off."
+BOT_TURNS_WHO = "Only an admin of this group, or someone linked to the hub, sets the turns of bots."
+BOT_TURNS_USAGE = "Use /botturns <n> (1 to 1000 turns of bots in one thread) or /botturns off."
 HOW_TO_LINK = (
     "{name}, what you write here does not reach the hub until you link your Telegram account: on the hub, open "
     "Inbox, Telegram, and open the link it gives in your private chat with @{bot}."
@@ -130,14 +134,20 @@ class Group:
         if moved is not None:
             return moved
         found = telegram.command(self.text)
-        if found is not None and self.sender.get("is_bot") is True and found[0] in ("start", "link", "unlink"):
-            return "ignored"  # another bot links nothing and takes no bridge off
+        if (
+            found is not None
+            and self.sender.get("is_bot") is True
+            and found[0] in ("start", "link", "unlink", "botturns")
+        ):
+            return "ignored"  # another bot links nothing, takes no bridge off and sets no bound on its own turns
         if found is not None and found[0] == "start":  # a private chat's link, as before: it does not link a group
             return await self.updates.text(self.message, self.chat_id)
         if found is not None and found[0] == "link":
             return await self.link(found[1])
         if found is not None and found[0] == "unlink":
             return await self.unlink()
+        if found is not None and found[0] == "botturns":
+            return await self.bot_turns(found[1])
         if not isinstance(self.message.get("message_id"), int):
             return "ignored"
         async with hub.begin(self.request) as conn:
@@ -189,6 +199,43 @@ class Group:
         await self.updates.say(self.chat_id, UNLINKED)
         return "unbridged"
 
+    async def bot_turns(self, arg: str | None) -> str:
+        """``/botturns [n|off]``: what bound the turns of bots in one thread have here, or a new one from an admin of
+        the group or a person linked to the hub."""
+        reply_to = self.message.get("message_id")
+        async with hub.begin(self.request) as conn:
+            found = await hub.bridge_find(conn, plugin(), server.KIND, self.chat_id)
+        if found is None:
+            await self.updates.say(self.chat_id, NOT_BRIDGED, reply_to=reply_to)
+            return "not_bridged"
+        limit = model.bot_turns_arg(arg)
+        if limit is None:
+            if arg is not None:
+                await self.updates.say(self.chat_id, BOT_TURNS_USAGE, reply_to=reply_to)
+                return "refused"
+            await self.updates.say(
+                self.chat_id, model.bot_turns_said(model.bot_turn_limit(found.state)), reply_to=reply_to
+            )
+            return "bot_turns"
+        if not await self.linked() and not await self.admin():
+            await self.updates.say(self.chat_id, BOT_TURNS_WHO, reply_to=reply_to)
+            return "refused"
+        async with hub.begin(self.request) as conn:
+            fresh = await hub.bridge_read(conn, plugin(), found.id)
+            state = model.with_bot_turns(dict(fresh.state) if fresh is not None else dict(found.state), limit)
+            await _keep(conn, found, state)
+        log.info("telegram bot turns set", extra={"bridge": found.id, "bot_turns": limit})
+        await self.updates.say(self.chat_id, model.bot_turns_said(model.bot_turn_limit(state)), reply_to=reply_to)
+        return "bot_turns_set"
+
+    async def linked(self) -> bool:
+        """Whether the sender is a person whose Telegram account is linked to a member of the hub."""
+        sender_id = _int(self.sender.get("id"))
+        if sender_id is None or self.sender.get("is_bot") is True:
+            return False
+        async with hub.begin(self.request) as conn:
+            return await hub.find_member(conn, plugin(), server.KIND, {"user_id": sender_id}) is not None
+
     async def admin(self) -> bool:
         """Whether the sender is an admin of the group, as Telegram says now."""
         sender_id = _int(self.sender.get("id"))
@@ -226,13 +273,14 @@ class Group:
             )
             return "not_linked"
         replied = _int(server._object(self.message.get("reply_to_message")).get("message_id"))
-        turn = None
+        turn, limit = None, model.MAX_BOT_TURNS
         if is_bot and model.streaming(self.text):
             return "held"  # a streamed answer: its last edit comes in (``edited``)
         if is_bot:
-            turn = await self.bot_turn(bridge, replied)
-            if turn is None:
+            taken = await self.bot_turn(bridge, replied)
+            if taken is None:
                 return "chain_ended"
+            turn, limit = taken
         files = []
         found = model.file_of(self.message)
         if found is not None:
@@ -247,7 +295,7 @@ class Group:
             async with hub.begin(self.request) as conn:
                 body = await self.body(conn, member, bridge, bot)
                 if turn is not None and turn > 0:
-                    body = model.turn_marked(body, turn)
+                    body = model.turn_marked(body, turn, limit)
                 sent = await hub.bridge_send(
                     conn,
                     member,
@@ -279,21 +327,25 @@ class Group:
             return "refused"
         return "bridged_in"
 
-    async def bot_turn(self, bridge: hub.Bridge, replied: int | None) -> int | None:
-        """The turn a linked bot's message takes in the thread it replies to (0 for one that starts a thread), or None
-        when that thread's bots had their turns: the first time, the group is told and the chain ends."""
+    async def bot_turn(self, bridge: hub.Bridge, replied: int | None) -> tuple[int, int | None] | None:
+        """(the turn a linked bot's message takes in the thread it replies to, 0 for one that starts a thread; the
+        bound of the bridge, None for none), or None when that thread's bots had their turns: the first time, the group
+        is told and the chain ends."""
         async with hub.begin(self.request) as conn:
             fresh = await hub.bridge_read(conn, plugin(), bridge.id)
         state = dict(fresh.state) if fresh is not None else dict(bridge.state)
+        limit = model.bot_turn_limit(state)
         root = model.thread_of(state, replied)
         if root is None:
-            return 0
+            return 0, limit
         turns, opener, ended = model.chain(state, root)
         if ended:
             return None
-        if turns < model.MAX_BOT_TURNS:
-            return turns + 1
-        said = await self.updates.say(self.chat_id, model.chain_ended(opener), reply_to=self.message.get("message_id"))
+        if limit is None or turns < limit:
+            return turns + 1, limit
+        said = await self.updates.say(
+            self.chat_id, model.chain_ended(opener, limit), reply_to=self.message.get("message_id")
+        )
         async with hub.begin(self.request) as conn:
             fresh = await hub.bridge_read(conn, plugin(), bridge.id)
             state = model.ended(dict(fresh.state) if fresh is not None else state, root)

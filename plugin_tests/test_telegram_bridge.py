@@ -661,6 +661,40 @@ def test_the_bots_of_a_thread_take_four_turns_then_the_chain_ends_until_a_person
     assert came_in(bridged, chat)[-1]["body"] == "[turn 1/4] answer again"
 
 
+def test_botturns_off_lets_the_bots_of_a_thread_go_on_and_a_number_sets_the_bound_again(bridged):
+    client, fake = bridged.client, bridged.fake
+    chat = peer_linked(bridged)
+    outcome, root = in_group(client, f"@{BOT} ask the peer bot about the release")
+    assert outcome == "bridged_in"
+    for turn in range(1, 6):
+        in_group(client, f"answer {turn}", PEER_BOT, reply_to=root)
+    assert in_group(client, "answer 6", PEER_BOT, reply_to=root)[0] == "chain_ended"
+    # Neither a bot nor a stranger sets the bound; a linked person does, and the ended chain goes on.
+    said_before = len(to_group(fake))
+    assert in_group(client, "/botturns off", PEER_BOT)[0] == "ignored"
+    assert in_group(client, "/botturns off", STRANGER_TG)[0] == "refused"
+    assert to_group(fake)[-1]["text"] == bridge.BOT_TURNS_WHO
+    assert in_group(client, "/botturns lots")[0] == "refused"
+    assert to_group(fake)[-1]["text"] == bridge.BOT_TURNS_USAGE
+    assert in_group(client, "/botturns")[0] == "bot_turns"
+    assert to_group(fake)[-1]["text"] == bridge_model.bot_turns_said(4)
+    assert in_group(client, f"/botturns@{BOT} off")[0] == "bot_turns_set"
+    assert to_group(fake)[-1]["text"] == bridge_model.bot_turns_said(None)
+    assert len(to_group(fake)) == said_before + 4
+    for turn in range(1, 9):
+        assert in_group(client, f"more {turn}", PEER_BOT, reply_to=root)[0] == "bridged_in"
+    bodies = [m["body"] for m in came_in(bridged, chat) if m["author"]["login"] == OTHER]
+    assert bodies[-8:] == [f"[turn {n}] more {n}" for n in range(1, 9)]
+    # A number puts a bound back, counted from then on.
+    assert in_group(client, "/botturns 2")[0] == "bot_turns_set"
+    assert to_group(fake)[-1]["text"] == bridge_model.bot_turns_said(2)
+    assert in_group(client, "again 1", PEER_BOT, reply_to=root)[0] == "bridged_in"
+    assert in_group(client, "again 2", PEER_BOT, reply_to=root)[0] == "bridged_in"
+    assert in_group(client, "again 3", PEER_BOT, reply_to=root)[0] == "chain_ended"
+    assert to_group(fake)[-1]["text"] == bridge_model.chain_ended("@owner_tg", 2)
+    assert came_in(bridged, chat)[-1]["body"] == "[turn 2/2] again 2"
+
+
 def test_a_bots_reply_to_a_hub_message_that_went_out_is_a_turn_of_its_thread(bridged):
     client, fake, headers = bridged.client, bridged.fake, bridged.headers
     chat = peer_linked(bridged)
@@ -687,6 +721,28 @@ def test_the_turns_of_a_thread_as_the_model_keeps_them():
     assert bridge_model.chain(bridge_model.spoke(state, 10, OWNER), 10) == (0, OWNER, False)
     assert bridge_model.turn_marked("hi", 2) == "[turn 2/4] hi"
     assert bridge_model.chain_ended(None).startswith("This thread had its 4 turns between bots")
+    assert bridge_model.turn_marked("hi", 7, None) == "[turn 7] hi"
+    assert bridge_model.chain_ended(None, 9).startswith("This thread had its 9 turns between bots")
+
+
+def test_the_bound_of_the_turns_of_bots_as_the_model_keeps_it():
+    assert bridge_model.bot_turn_limit({}) == bridge_model.MAX_BOT_TURNS
+    for broken in (-1, True, "off", 10_000, None):
+        assert bridge_model.bot_turn_limit({"bot_turns": broken}) == bridge_model.MAX_BOT_TURNS
+    assert [bridge_model.bot_turns_arg(arg) for arg in ("off", "OFF", "0", "unlimited", "12", "1000")] == [
+        0,
+        0,
+        0,
+        0,
+        12,
+        1000,
+    ]
+    assert [bridge_model.bot_turns_arg(arg) for arg in (None, "1001", "-3", "lots", "2.5")] == [None] * 5
+    state = bridge_model.ended(bridge_model.spoke({"ids": {"1": 2}}, 10, "@owner_tg"), 10)
+    unbounded = bridge_model.with_bot_turns(state, bridge_model.NO_BOUND)
+    assert bridge_model.bot_turn_limit(unbounded) is None
+    assert bridge_model.chain(unbounded, 10) == (0, "@owner_tg", False) and unbounded["ids"] == {"1": 2}
+    assert bridge_model.bot_turn_limit(bridge_model.with_bot_turns(unbounded, 6)) == 6
     for n in range(bridge_model.KEEP_CHAINS + 5):
         state = bridge_model.bot_spoke(state, 1000 + n)
     assert len(state["chains"]) == bridge_model.KEEP_CHAINS

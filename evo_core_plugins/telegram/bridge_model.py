@@ -18,9 +18,11 @@ In from the group (``inbound_text``), ``@<bot>`` becomes the mention of the chat
 Telegram account linked to the hub the mention of its member's login, as the hub reads mentions.
 
 Another bot of the group that a hub admin linked to a member speaks for that member, and the turns of bots in one
-thread are bounded (``thread_of``, ``chain``, ``spoke``, ``bot_spoke``): a thread takes at most MAX_BOT_TURNS
-messages of bots after a person last wrote in it, each marked with its turn (``turn_marked``); the next ends the
-chain (``ended``), the group told once (CHAIN_ENDED), and bots are not heard there again until a person writes.
+thread are bounded (``thread_of``, ``chain``, ``spoke``, ``bot_spoke``): a thread takes at most ``bot_turn_limit``
+messages of bots after a person last wrote in it, MAX_BOT_TURNS unless the group set another bound with
+``/botturns`` (``with_bot_turns``, ``bot_turns_arg``), each marked with its turn (``turn_marked``); the next ends the
+chain (``ended``), the group told once (CHAIN_ENDED), and bots are not heard there again until a person writes. A
+group that turned the bound off (``/botturns off``) lets its bots take turns until one of them stops.
 
 A group gets at most GROUP_MESSAGES messages in GROUP_SECONDS, besides one a second in one chat and 30 a second
 overall that the Bot FAQ asks for (``Pace``).
@@ -45,15 +47,25 @@ KEEP_IDS = 200  # the hub's messages whose group message the bridge remembers (r
 KEEP_RUNS = 30  # the runs whose progress message it remembers
 TYPING_STATES = frozenset({"leased", "running", "interactive"})  # a run whose agent is at work: the bot shows typing
 KEEP_TOLD = 200  # the senders it told how to link
-MAX_BOT_TURNS = 4  # the messages of bots one thread takes after a person last wrote there
+MAX_BOT_TURNS = 4  # the messages of bots one thread takes after a person last wrote there, unless the group sets more
+MAX_SET_BOT_TURNS = 1000  # the largest bound ``/botturns <n>`` sets; ``/botturns off`` sets none
+NO_BOUND = 0  # what the state keeps for a group that turned the bound off
 KEEP_THREADS = 100  # the group's messages whose thread of the hub the bridge remembers
 KEEP_CHAINS = 30  # the threads whose turns of bots it remembers
 TURN_MARK = "[turn {turn}/{limit}] "
+TURN_MARK_UNBOUNDED = "[turn {turn}] "
 # what a bot that streams its answer puts at the end of the message it is still editing (Hermes: " ▉")
 STREAMING_TAILS = ("▉", "▊", "▋", "▌", "▍", "▎", "▏", "█")
 CHAIN_ENDED = (
     "This thread had its {limit} turns between bots, so the hub takes no more of theirs here. "
     "{opener}A message of a person in the thread gives them {limit} more."
+)
+BOT_TURNS_BOUND = (
+    "Bots take at most {limit} turns in one thread after a person last wrote there. "
+    "An admin of this group, or someone linked to the hub, changes it with /botturns <n> or /botturns off."
+)
+BOT_TURNS_OFF = (
+    "Bots take turns in a thread without a bound here, until one of them stops. /botturns {limit} puts the bound back."
 )
 CUT_TAIL = '\n\n<a href="{url}">Read the rest on the hub</a>'
 FILES_ON_HUB = "(a file, on the hub)"
@@ -363,7 +375,7 @@ def _chained(state: Mapping, root: int, turns: int, opener: str | None, ended: b
 
 
 def spoke(state: Mapping, root: int, opener: str) -> dict:
-    """``state`` after a person, ``opener``, wrote in thread ``root``: its bots have MAX_BOT_TURNS turns again, and the
+    """``state`` after a person, ``opener``, wrote in thread ``root``: its bots have their turns again, and the
     agent's next answer there replies to the thread again, not to a bot."""
     kept = dict(state.get("bot_last") or {})
     kept.pop(str(root), None)
@@ -398,14 +410,54 @@ def streaming(text: str) -> bool:
     return text.rstrip().endswith(STREAMING_TAILS)
 
 
-def turn_marked(text: str, turn: int) -> str:
-    """A bot's ``text`` with its turn in the thread before it."""
-    return TURN_MARK.format(turn=turn, limit=MAX_BOT_TURNS) + text
+def bot_turn_limit(state: Mapping) -> int | None:
+    """The turns of bots one thread of the bridge takes after a person last wrote there: what ``/botturns`` set, or
+    MAX_BOT_TURNS; None when the group turned the bound off."""
+    found = state.get("bot_turns")
+    if not isinstance(found, int) or isinstance(found, bool) or found < 0 or found > MAX_SET_BOT_TURNS:
+        return MAX_BOT_TURNS
+    return None if found == NO_BOUND else found
 
 
-def chain_ended(opener: str | None) -> str:
-    """What the group is told once when a thread's bots had their turns: who opened the chain, when the bridge knows."""
-    return CHAIN_ENDED.format(limit=MAX_BOT_TURNS, opener=f"{opener}: " if opener else "")
+def bot_turns_arg(arg: str | None) -> int | None:
+    """The bound the argument of ``/botturns`` sets: a number of turns, NO_BOUND for ``off``, or None for no argument
+    or one the command does not take."""
+    if arg is None:
+        return None
+    word = arg.strip().lower()
+    if word in ("off", "none", "unlimited", "0"):
+        return NO_BOUND
+    if word.isdigit() and 1 <= int(word) <= MAX_SET_BOT_TURNS:
+        return int(word)
+    return None
+
+
+def with_bot_turns(state: Mapping, limit: int) -> dict:
+    """``state`` with the bound ``limit`` (NO_BOUND: none) on the turns of bots, and every chain counted again from
+    nought, who opened it kept: a thread whose chain ended takes its bots again."""
+    chains = {}
+    for root, found in (state.get("chains") or {}).items():
+        opener = found[1] if isinstance(found, list) and len(found) == 3 and isinstance(found[1], str) else None
+        chains[str(root)] = [0, opener, False]
+    return {**state, "bot_turns": limit, "chains": chains}
+
+
+def bot_turns_said(limit: int | None) -> str:
+    """What the group is told of the bound ``limit`` (None: none) on the turns of bots."""
+    return BOT_TURNS_OFF.format(limit=MAX_BOT_TURNS) if limit is None else BOT_TURNS_BOUND.format(limit=limit)
+
+
+def turn_marked(text: str, turn: int, limit: int | None = MAX_BOT_TURNS) -> str:
+    """A bot's ``text`` with its turn in the thread before it, out of ``limit`` when the turns are bounded."""
+    if limit is None:
+        return TURN_MARK_UNBOUNDED.format(turn=turn) + text
+    return TURN_MARK.format(turn=turn, limit=limit) + text
+
+
+def chain_ended(opener: str | None, limit: int = MAX_BOT_TURNS) -> str:
+    """What the group is told once when a thread's bots had their ``limit`` turns: who opened the chain, when the
+    bridge knows."""
+    return CHAIN_ENDED.format(limit=limit, opener=f"{opener}: " if opener else "")
 
 
 # The pace of a group

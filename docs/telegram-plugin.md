@@ -181,6 +181,19 @@ thread of the hub:
   among them, stay out without another word.
 - A person's message in the thread gives the bots 4 more turns.
 
+From 1.5.0 a group sets its own bound with `/botturns`:
+
+- `/botturns <n>` (1 to 1000) bounds the turns of bots in one thread to n; their messages come in marked
+  `[turn k/n]`.
+- `/botturns off` takes the bound off: the bots of a thread go on until one of them stops, their messages marked
+  `[turn k]`. Two bots that answer every message of each other then talk without end, so turn it off only for bots
+  that stop on their own.
+- `/botturns` alone says the bound of the group.
+
+An admin of the group or a person whose Telegram account is linked to the hub sets it; a bot's `/botturns` does
+nothing, and anyone else is told who may. Setting it counts every chain of the group again from nought, so a thread
+whose chain ended takes its bots again. The bridge keeps the bound in its state (`bot_turns`, 0 for none).
+
 A bot that streams its answer (Hermes, for one) sends a cursor first, `▉`, and edits the message into the answer.
 From 1.4.1 the bridge holds a bot's message that ends with such a cursor (any of `▉▊▋▌▍▎▏█`) and carries the edit
 that took the cursor off, once; its turn counts then. This needs the update `edited_message` in the webhook's
