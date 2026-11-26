@@ -46,7 +46,8 @@ The bridge keeps in its state (``hub.bridge_set_state``) the group's message of 
 carried (``ids``), the files of a message still to go (``files``), the progress message of each of the last runs
 (``runs``), the runs at work and until when (``typing``), the chat's agent once it spoke (``agent``), the senders
 told how to link (``told``), the thread of the hub each of the last group messages it carried is in (``threads``)
-and the turns of bots in the last threads (``chains``).
+and the turns of bots in the last threads (``chains``), and which of the hub's messages came from a bot (``bots``): the
+progress of a run a bot started does not go to the group, so the agent's answer is the last message the bot gets.
 """
 
 from __future__ import annotations
@@ -263,6 +264,7 @@ class Group:
                 state = model.threaded(state, self.message["message_id"], root)
                 if is_bot:
                     state = model.bot_spoke(state, root, self.message["message_id"])
+                    state = model.remembered(state, "bots", {sent.id: self.message["message_id"]}, model.KEEP_IDS)
                 else:
                     username = self.sender.get("username")
                     state = model.spoke(state, root, f"@{username}" if isinstance(username, str) else member.login)
@@ -633,6 +635,8 @@ async def _type_while_at_work(context: hub.Context, bot: server.BotApi, bridge_i
 async def _progress(context: hub.Context, bot: server.BotApi, bridge: hub.Bridge, payload: dict) -> None:
     run_id, state = payload["run_id"], str(payload.get("state") or "")
     await _typing(context, bot, bridge, run_id, state)
+    if str(payload.get("message_id")) in (bridge.state.get("bots") or {}):
+        return  # a run a bot started: its answer is the last word the bot gets, not a progress line after it
     text = model.progress_text(run_id, state)
     shown = (bridge.state.get("runs") or {}).get(str(run_id))
     if isinstance(shown, int):

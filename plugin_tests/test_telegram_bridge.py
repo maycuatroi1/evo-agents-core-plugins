@@ -766,3 +766,22 @@ def test_the_agents_answer_to_a_bot_replies_to_the_bots_message_until_a_person_w
     state = bridge_model.bot_spoke({}, 7, 501)
     assert bridge_model.bot_last(state, 7) == 501 and bridge_model.bot_last(state, 8) is None
     assert bridge_model.bot_last(bridge_model.spoke(state, 7, OWNER), 7) is None
+
+
+def test_a_run_a_bot_started_shows_no_progress_line_in_the_group(bridged):
+    client, fake = bridged.client, bridged.fake
+    chat = peer_linked(bridged)
+    assert in_group(client, f"@{BOT} what is due?", PEER_BOT)[0] == "bridged_in"
+    (started,) = came_in(bridged, chat)
+
+    def moved(state: str):
+        async def emit(conn):
+            return await chat_bridge_events.progress(conn, chat["id"], started["id"], 77, state)
+
+        assert on_hub(client, emit) == 1
+        deliver_events(client)
+
+    moved("leased")
+    moved("done")
+    assert not [p for p in to_group(fake) if p.get("text", "").startswith("Run #77")]
+    assert not to_group(fake, method="editMessageText")

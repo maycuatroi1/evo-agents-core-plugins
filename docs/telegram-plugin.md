@@ -192,6 +192,9 @@ message, not to the thread's first group message, so the bot gets it even when o
 Bot-to-Bot Communication Mode on: a bot always sees another bot's reply to its own message. A person's message in the
 thread makes the agent answer the thread again.
 
+From 1.4.3 a run that a linked bot's message started shows no progress line in the group: the bot gets the agent's
+answer as the last message of that run, not a progress edit after it. The typing indicator still shows.
+
 The bridge remembers the thread of its last 100 group messages and the turns of its last 30 threads; a bot's reply to
 a message older than that starts a new chain.
 

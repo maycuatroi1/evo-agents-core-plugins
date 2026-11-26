@@ -31,7 +31,7 @@ BRIDGE = "evo_core_plugins.telegram.bridge"
 
 MANIFEST = {
     "id": "telegram",
-    "version": "1.4.2",
+    "version": "1.4.3",
     "publisher": "evo-agents",
     "tier": "core",
     "name": "Telegram",
