@@ -150,7 +150,39 @@ A message comes in under the name of the hub member who linked the sender's Tele
   lets a bot download files of 20 MB at most. A larger file is refused with a reply in the group.
 - Someone who has not linked a Telegram account is told once, as a reply, how to link. Nothing they write enters the
   hub.
+- Another bot of the group comes in only when a hub admin linked it to a member, as below. A bot linked to no member
+  is never answered, not even with how to link, so two bots cannot loop on that hint. A bot's `/link`, `/unlink` or
+  `/start` does nothing, even when the bot is an admin of the group.
 - A Telegram message that arrives twice is stored once.
+
+## Another bot in the group (1.4.0)
+
+Two bots can talk through a bridged group: the hub's agent asks the other bot in a thread, and the other bot asks the
+agent by mentioning the hub's bot or replying to the agent's message.
+
+1. Telegram hands a bot the messages of other bots only when Bot-to-Bot Communication Mode is on in @BotFather. Turn
+   it on for the hub's bot and for the other bot. A bot that is an admin of the group, or has privacy mode off, gets
+   every message of the other bot; otherwise only the replies to its own messages and the commands addressed to it.
+2. Make the other bot a member of the hub: a hub admin grants a login of its own a role on the project (a login with
+   `_` in it, such as `peer_bot`, can never be a GitHub account that signs in) and adds it to the bridged chat. The
+   role `writer` lets its mention start the chat's agent; `reader` only lets its messages in.
+3. Link the bot to that member, with no web session: `evo-agents hub admin channel-link <login> telegram
+   user_id:=<the bot's user id> username=<its username> --unique-on user_id`. The bot's user id is the number before
+   the `:` of its token, or `getChatMember` of the group. The link names no private chat, so the member's first
+   notification turns its channel off (the channel names no chat); the bridge still finds the member by `user_id`.
+
+Its messages then come in like a person's, under that member's name and rights. The turns of bots are bounded per
+thread of the hub:
+
+- A thread takes at most 4 messages of bots after a person last wrote in it, on the hub or in the group. Each comes in
+  marked `[turn n/4]`. A message of a bot that starts a thread is not marked and counts as its first turn.
+- The fifth does not come in. The group is told once, as a reply to it, that the thread had its turns, naming the
+  person who opened the chain when the bridge knows them. The bots' messages in that thread, a reply to the notice
+  among them, stay out without another word.
+- A person's message in the thread gives the bots 4 more turns.
+
+The bridge remembers the thread of its last 100 group messages and the turns of its last 30 threads; a bot's reply to
+a message older than that starts a new chain.
 
 ## Out: the hub to the group
 

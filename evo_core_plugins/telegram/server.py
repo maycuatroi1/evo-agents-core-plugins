@@ -917,9 +917,10 @@ class Updates:
         self.config = hub.hub_config(request)
         self.bot = bot
 
-    async def say(self, chat_id: int, text: str, *, reply_to: int | None = None) -> None:
+    async def say(self, chat_id: int, text: str, *, reply_to: int | None = None) -> int | None:
+        """``text`` to ``chat_id``, a reply to ``reply_to``: the id of the message it became, None when it failed."""
         try:
-            await self.bot.call(
+            sent = await self.bot.call(
                 "sendMessage",
                 chat_id=chat_id,
                 text=text,
@@ -928,6 +929,8 @@ class Updates:
             )
         except BotApiError as exc:
             log.warning("telegram reply failed", extra={"code": exc.code})
+            return None
+        return _sent_id(sent)
 
     async def handle(self, update: dict) -> str:
         callback, message = update.get("callback_query"), update.get("message")
