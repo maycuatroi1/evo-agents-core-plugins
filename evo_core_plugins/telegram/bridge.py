@@ -262,7 +262,7 @@ class Group:
                 root = sent.thread_root_id if sent.thread_root_id is not None else sent.id
                 state = model.threaded(state, self.message["message_id"], root)
                 if is_bot:
-                    state = model.bot_spoke(state, root)
+                    state = model.bot_spoke(state, root, self.message["message_id"])
                 else:
                     username = self.sender.get("username")
                     state = model.spoke(state, root, f"@{username}" if isinstance(username, str) else member.login)
@@ -543,6 +543,9 @@ async def _carry(
     uploaded = 0
     if head is None:
         reply_to = int(read.reply_to) if read.reply_to and read.reply_to.lstrip("-").isdigit() else None
+        if read.author_kind == "agent" and read.thread_root_id is not None:
+            # an answer to a bot replies to the bot's message: a bot sees another bot's reply to it in any mode
+            reply_to = model.bot_last(bridge.state, read.thread_root_id) or reply_to
         if going and not read.body.strip():
             first, going = going[0], going[1:]
             caption = model.caption(read.author_kind, read.author, url, left_out)

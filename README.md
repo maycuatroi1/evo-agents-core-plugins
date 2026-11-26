@@ -86,9 +86,14 @@ versions.
 | 2.8.2 | 1.8 | `c87a4d7ca6527697b979c501b1996475b498df2b` (pull request #785: a bridged group's sender who linked no account comes in as a guest) |
 | 2.9.0 | 1.8 | `cba15d9fc5797a335c7dda6dffa800f3a1ac0443` (release 0.73.6, which has the hub admin's link of a member's channel from 0.73.4) |
 | 2.9.1 | 1.8 | the same |
+| 2.9.2 | 1.8 | the same |
 
 ### Releases
 
+- **2.9.2**: telegram 1.4.2 makes the agent's answer to a linked bot reach it in any mode. An agent's message in a
+  thread where a bot spoke last, since a person did, goes out as a reply to that bot's message instead of the
+  thread's first group message: a bot without Bot-to-Bot Communication Mode still gets the replies to its own
+  messages. A person's message in the thread brings the thread's first message back as the target.
 - **2.9.1**: telegram 1.4.1 takes a linked bot's streamed answer once, whole. A bot that streams sends a cursor first
   (`▉`) and edits it into its answer; the bridge holds a bot's message that ends with such a cursor and carries the
   edit that took it off (the update `edited_message`, now among the webhook's `allowed_updates`), with its turn

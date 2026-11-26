@@ -363,14 +363,27 @@ def _chained(state: Mapping, root: int, turns: int, opener: str | None, ended: b
 
 
 def spoke(state: Mapping, root: int, opener: str) -> dict:
-    """``state`` after a person, ``opener``, wrote in thread ``root``: its bots have MAX_BOT_TURNS turns again."""
-    return _chained(state, root, 0, opener[:64], False)
+    """``state`` after a person, ``opener``, wrote in thread ``root``: its bots have MAX_BOT_TURNS turns again, and the
+    agent's next answer there replies to the thread again, not to a bot."""
+    kept = dict(state.get("bot_last") or {})
+    kept.pop(str(root), None)
+    return _chained({**state, "bot_last": kept}, root, 0, opener[:64], False)
 
 
-def bot_spoke(state: Mapping, root: int) -> dict:
-    """``state`` after a bot took a turn in thread ``root``."""
+def bot_spoke(state: Mapping, root: int, group_message_id: int | None = None) -> dict:
+    """``state`` after a bot took a turn in thread ``root`` with the group's message ``group_message_id``: the agent's
+    next answer there replies to that message, so the bot gets it whatever its mode (``bot_last``)."""
     turns, opener, ended = chain(state, root)
-    return _chained(state, root, turns + 1, opener, ended)
+    state = _chained(state, root, turns + 1, opener, ended)
+    if group_message_id is not None:
+        state = remembered(state, "bot_last", {root: group_message_id}, KEEP_CHAINS)
+    return state
+
+
+def bot_last(state: Mapping, root: int | None) -> int | None:
+    """The group's message of the bot that spoke last in thread ``root`` since a person did, or None."""
+    found = (state.get("bot_last") or {}).get(str(root)) if root is not None else None
+    return found if isinstance(found, int) and not isinstance(found, bool) else None
 
 
 def ended(state: Mapping, root: int) -> dict:
