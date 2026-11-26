@@ -89,9 +89,14 @@ versions.
 | 2.9.2 | 1.8 | the same |
 | 2.9.3 | 1.8 | the same |
 | 2.10.0 | 1.8 | the same |
+| 2.11.0 | 1.8 | the same |
 
 ### Releases
 
+- **2.11.0**: telegram 1.6.0 stops the bots of a bridged group at once. `/stopbots` ends the chain of every thread,
+  from an admin of the group, a person linked to the hub or a linked bot; a message of the hub chat with a line
+  `/stopbots` alone ends the chain of its thread, so the chat's agent ends a loop with another bot itself. The bots of
+  a thread take turns again once a person writes there. `/botturns 0` no longer takes the bound off.
 - **2.10.0**: telegram 1.5.0 lets a bridged group set the bound on the turns of bots in one thread. `/botturns <n>`
   (1 to 1000) sets it, `/botturns off` takes it off so two linked bots go on until one stops (their messages marked
   `[turn n]`), and `/botturns` alone says what it is. An admin of the group or a person linked to the hub sets it; a

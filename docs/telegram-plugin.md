@@ -194,6 +194,16 @@ An admin of the group or a person whose Telegram account is linked to the hub se
 nothing, and anyone else is told who may. Setting it counts every chain of the group again from nought, so a thread
 whose chain ended takes its bots again. The bridge keeps the bound in its state (`bot_turns`, 0 for none).
 
+From 1.6.0 the bots stop at once, by a person or by the chat's agent:
+
+- `/stopbots` ends the chain of every thread the bridge knows, each until a person writes in it. An admin of the
+  group, a person linked to the hub, or a bot a hub admin linked to a member sends it: stopping starts no loop, so a
+  bot may. The group is told once; a bot's reply to that notice stays out.
+- A message of the hub chat with a line that is `/stopbots` alone (as code or bold too) ends the chain of its thread
+  before it goes out, and the group reads a notice in place of that line. The chat's agent ends a back-and-forth that
+  goes nowhere this way, in its own answer; a person on the hub may too.
+- `/botturns 0` is refused, naming `/stopbots`: before 1.6.0 it took the bound off, the opposite of what it reads as.
+
 A bot that streams its answer (Hermes, for one) sends a cursor first, `▉`, and edits the message into the answer.
 From 1.4.1 the bridge holds a bot's message that ends with such a cursor (any of `▉▊▋▌▍▎▏█`) and carries the edit
 that took the cursor off, once; its turn counts then. This needs the update `edited_message` in the webhook's
