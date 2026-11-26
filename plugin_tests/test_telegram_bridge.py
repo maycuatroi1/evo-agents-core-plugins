@@ -695,6 +695,68 @@ def test_botturns_off_lets_the_bots_of_a_thread_go_on_and_a_number_sets_the_boun
     assert came_in(bridged, chat)[-1]["body"] == "[turn 2/2] again 2"
 
 
+def test_stopbots_ends_the_chains_of_bots_at_once_and_a_bots_answer_to_its_notice_stays_out(bridged):
+    client, fake = bridged.client, bridged.fake
+    chat = peer_linked(bridged)
+    assert in_group(client, "/botturns off")[0] == "bot_turns_set"
+    outcome, root = in_group(client, f"@{BOT} ask the peer bot about the release")
+    assert outcome == "bridged_in"
+    for turn in range(1, 7):
+        assert in_group(client, f"answer {turn}", PEER_BOT, reply_to=root)[0] == "bridged_in"
+    # A stranger does not stop them and is told so; "/botturns 0" is refused, naming /stopbots.
+    assert in_group(client, "/stopbots", STRANGER_TG)[0] == "refused"
+    assert to_group(fake)[-1]["text"] == bridge.STOP_BOTS_WHO
+    assert in_group(client, "/botturns 0")[0] == "refused"
+    assert "/stopbots" in to_group(fake)[-1]["text"]
+    # The linked bot itself may stop them: stopping starts no loop.
+    said_before = len(to_group(fake))
+    assert in_group(client, f"/stopbots@{BOT}", PEER_BOT)[0] == "bots_stopped"
+    (notice,) = to_group(fake)[said_before:]
+    assert notice["text"] == bridge_model.BOTS_STOPPED
+    assert in_group(client, "answer 7", PEER_BOT, reply_to=root)[0] == "chain_ended"
+    assert in_group(client, "thanks", PEER_BOT, reply_to=notice["message_id"])[0] == "chain_ended"
+    assert len(to_group(fake)) == said_before + 1  # not told again
+    bodies = [m["body"] for m in came_in(bridged, chat) if m["author"]["login"] == OTHER]
+    assert bodies[-1] == "[turn 6] answer 6"
+    # A person writes in the thread: the bots take turns there again, under the group's bound.
+    assert in_group(client, "go on", reply_to=root)[0] == "bridged_in"
+    assert in_group(client, "answer again", PEER_BOT, reply_to=root)[0] == "bridged_in"
+    assert came_in(bridged, chat)[-1]["body"] == "[turn 1] answer again"
+
+
+def test_a_hub_message_with_a_stopbots_line_ends_the_chain_of_its_thread(bridged):
+    client, fake, headers = bridged.client, bridged.fake, bridged.headers
+    chat = peer_linked(bridged)
+    asked = sent(client, headers["owner"], chat["id"], "@peer_bot when is the release?")
+    deliver_events(client)
+    (out,) = [payload for payload in to_group(fake) if "when is the release" in payload.get("text", "")]
+    assert in_group(client, "on Friday", PEER_BOT, reply_to=out["message_id"])[0] == "bridged_in"
+    closing = "Thanks, that settles it.\n\n`/stopbots`"
+    sent(client, headers["owner"], chat["id"], closing, reply_to=asked["id"])
+    deliver_events(client)
+    (last,) = [payload for payload in to_group(fake) if "settles it" in payload.get("text", "")]
+    assert "/stopbots" not in last["text"] and bridge_model.THREAD_STOPPED in last["text"]
+    assert in_group(client, "You are welcome!", PEER_BOT, reply_to=last["message_id"])[0] == "chain_ended"
+    assert in_group(client, "Bye", PEER_BOT, reply_to=out["message_id"])[0] == "chain_ended"
+    assert came_in(bridged, chat)[-1]["body"] == "[turn 1/4] on Friday"
+
+
+def test_the_stop_of_the_bots_as_the_model_keeps_it():
+    for body in ("/stopbots", "done\n/stopbots", "done\n\n`/stopbots`", "**/stopbots@hub_bot**\nlater", "/STOPBOTS  "):
+        assert bridge_model.stops_bots(body), body
+    for body in ("say /stopbots to stop them", "/stopbots now", "`/stopbots` stops them", ""):
+        assert not bridge_model.stops_bots(body), body
+    assert bridge_model.without_stop("done\n\n/stopbots\n") == f"done\n\n{bridge_model.THREAD_STOPPED}"
+    assert bridge_model.without_stop("/stopbots") == bridge_model.THREAD_STOPPED
+    state = bridge_model.threaded(bridge_model.spoke({}, 10, "@owner_tg"), 501, 20)
+    state = bridge_model.all_ended(state)
+    assert bridge_model.chain(state, 10) == (0, "@owner_tg", True)
+    assert bridge_model.chain(state, 20) == (0, None, True)
+    state = bridge_model.noticed(state, 777)
+    assert bridge_model.a_notice(state, 777) and not bridge_model.a_notice(state, 778)
+    assert not bridge_model.a_notice(state, None)
+
+
 def test_a_bots_reply_to_a_hub_message_that_went_out_is_a_turn_of_its_thread(bridged):
     client, fake, headers = bridged.client, bridged.fake, bridged.headers
     chat = peer_linked(bridged)
@@ -729,15 +791,9 @@ def test_the_bound_of_the_turns_of_bots_as_the_model_keeps_it():
     assert bridge_model.bot_turn_limit({}) == bridge_model.MAX_BOT_TURNS
     for broken in (-1, True, "off", 10_000, None):
         assert bridge_model.bot_turn_limit({"bot_turns": broken}) == bridge_model.MAX_BOT_TURNS
-    assert [bridge_model.bot_turns_arg(arg) for arg in ("off", "OFF", "0", "unlimited", "12", "1000")] == [
-        0,
-        0,
-        0,
-        0,
-        12,
-        1000,
-    ]
-    assert [bridge_model.bot_turns_arg(arg) for arg in (None, "1001", "-3", "lots", "2.5")] == [None] * 5
+    assert [bridge_model.bot_turns_arg(arg) for arg in ("off", "OFF", "unlimited", "12", "1000")] == [0, 0, 0, 12, 1000]
+    # "0" reads as no turns at all, not as no bound: the command refuses it and names /stopbots
+    assert [bridge_model.bot_turns_arg(arg) for arg in (None, "0", "1001", "-3", "lots", "2.5")] == [None] * 6
     state = bridge_model.ended(bridge_model.spoke({"ids": {"1": 2}}, 10, "@owner_tg"), 10)
     unbounded = bridge_model.with_bot_turns(state, bridge_model.NO_BOUND)
     assert bridge_model.bot_turn_limit(unbounded) is None

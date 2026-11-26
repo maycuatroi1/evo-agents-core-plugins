@@ -22,7 +22,10 @@ thread are bounded (``thread_of``, ``chain``, ``spoke``, ``bot_spoke``): a threa
 messages of bots after a person last wrote in it, MAX_BOT_TURNS unless the group set another bound with
 ``/botturns`` (``with_bot_turns``, ``bot_turns_arg``), each marked with its turn (``turn_marked``); the next ends the
 chain (``ended``), the group told once (CHAIN_ENDED), and bots are not heard there again until a person writes. A
-group that turned the bound off (``/botturns off``) lets its bots take turns until one of them stops.
+group that turned the bound off (``/botturns off``) lets its bots take turns until one of them stops. ``/stopbots``
+ends every chain the bridge keeps at once (``all_ended``), and a message of the hub with a line ``/stopbots`` alone
+ends the chain of its thread (``stops_bots``, ``without_stop``): the chat's agent stops a back-and-forth it sees going
+nowhere. A bot's reply to one of the bridge's own notices on the turns of bots (``noticed``) is not heard either.
 
 A group gets at most GROUP_MESSAGES messages in GROUP_SECONDS, besides one a second in one chat and 30 a second
 overall that the Bot FAQ asks for (``Pace``).
@@ -52,6 +55,9 @@ MAX_SET_BOT_TURNS = 1000  # the largest bound ``/botturns <n>`` sets; ``/botturn
 NO_BOUND = 0  # what the state keeps for a group that turned the bound off
 KEEP_THREADS = 100  # the group's messages whose thread of the hub the bridge remembers
 KEEP_CHAINS = 30  # the threads whose turns of bots it remembers
+KEEP_NOTICES = 20  # the bridge's own notices on the turns of bots, whose replies by bots it does not hear
+# a line of a hub message that stops the bots of its thread: ``/stopbots`` alone, maybe as code or bold
+STOP_LINE = re.compile(r"^[ \t]*[`*_]*/stopbots(?:@[A-Za-z0-9_]{1,64})?[`*_]*[ \t]*$", re.IGNORECASE | re.MULTILINE)
 TURN_MARK = "[turn {turn}/{limit}] "
 TURN_MARK_UNBOUNDED = "[turn {turn}] "
 # what a bot that streams its answer puts at the end of the message it is still editing (Hermes: " ▉")
@@ -65,7 +71,15 @@ BOT_TURNS_BOUND = (
     "An admin of this group, or someone linked to the hub, changes it with /botturns <n> or /botturns off."
 )
 BOT_TURNS_OFF = (
-    "Bots take turns in a thread without a bound here, until one of them stops. /botturns {limit} puts the bound back."
+    "Bots take turns in a thread without a bound here, until one of them stops. /botturns {limit} puts the bound back, "
+    "/stopbots stops them now."
+)
+BOTS_STOPPED = (
+    "The bots stop here: the hub takes no more of their messages in the threads of this group, each until a person "
+    "writes in it."
+)
+THREAD_STOPPED = (
+    "🛑 The bots stop here: the hub takes no more of their messages in this thread until a person writes in it."
 )
 CUT_TAIL = '\n\n<a href="{url}">Read the rest on the hub</a>'
 FILES_ON_HUB = "(a file, on the hub)"
@@ -404,6 +418,37 @@ def ended(state: Mapping, root: int) -> dict:
     return _chained(state, root, turns, opener, True)
 
 
+def all_ended(state: Mapping) -> dict:
+    """``state`` with the chain of every thread it knows ended, the last KEEP_CHAINS of them: no bot is heard in those
+    threads until a person writes in one (``/stopbots``)."""
+    roots = [*(state.get("chains") or {}), *(state.get("threads") or {}).values()]
+    for root in dict.fromkeys(int(root) for root in roots if str(root).lstrip("-").isdigit()):
+        turns, opener, _ = chain(state, root)
+        state = _chained(state, root, turns, opener, True)
+    return dict(state)
+
+
+def stops_bots(body: str) -> bool:
+    """Whether a message of the hub stops the bots of its thread: it has a line that is ``/stopbots`` alone."""
+    return STOP_LINE.search(body or "") is not None
+
+
+def without_stop(body: str) -> str:
+    """``body`` as the group reads it once it stopped the bots: its ``/stopbots`` lines out, THREAD_STOPPED at its end."""
+    kept = re.sub(r"\n{3,}", "\n\n", STOP_LINE.sub("", body or "")).strip()
+    return f"{kept}\n\n{THREAD_STOPPED}" if kept else THREAD_STOPPED
+
+
+def noticed(state: Mapping, group_message_id: int) -> dict:
+    """``state`` with the group's message ``group_message_id`` among the bridge's notices on the turns of bots."""
+    return remembered(state, "notices", {group_message_id: 1}, KEEP_NOTICES)
+
+
+def a_notice(state: Mapping, group_message_id: int | None) -> bool:
+    """Whether the group's message ``group_message_id`` is one of the bridge's notices on the turns of bots."""
+    return group_message_id is not None and str(group_message_id) in (state.get("notices") or {})
+
+
 def streaming(text: str) -> bool:
     """Whether a bot's ``text`` is an answer it is still writing: it ends with a cursor of STREAMING_TAILS, which the
     bot's last edit takes off. Such a message is held, not carried, until that edit."""
@@ -425,7 +470,7 @@ def bot_turns_arg(arg: str | None) -> int | None:
     if arg is None:
         return None
     word = arg.strip().lower()
-    if word in ("off", "none", "unlimited", "0"):
+    if word in ("off", "none", "unlimited"):  # not "0": who writes no turns means the bots to stop (/stopbots)
         return NO_BOUND
     if word.isdigit() and 1 <= int(word) <= MAX_SET_BOT_TURNS:
         return int(word)
