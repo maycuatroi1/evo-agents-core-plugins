@@ -16,6 +16,16 @@ its thread; ``@<bot>`` mentions the chat's agent and ``@<username>`` of a linked
 who linked nothing is told once how to link, and what they write stays out of the hub. A group that is not bridged
 gets no answer: with privacy mode off the bot reads every message there.
 
+Another bot of the group (Telegram hands a bot the messages of other bots once Bot-to-Bot Communication Mode is on
+in @BotFather) comes in only when a hub admin linked it to a member with no web session (``PUT
+/v1/admin/users/{login}/channels/telegram`` with its ``user_id``): then as that member, like a person, so ``@<bot>``
+in its message starts the chat's agent and its reply to the agent's message continues that thread. A bot linked to
+no member is never answered and stays out, and a bot's ``/link``, ``/unlink`` or ``/start`` does nothing, so two
+bots cannot talk each other into a loop or take the bridge off. In one thread of the hub bots take at most
+``bridge_model.MAX_BOT_TURNS`` turns after a person last wrote there, each marked ``[turn n/4]``; the next ends the
+chain: the group is told once, naming the person who opened it, and the bots' messages there stay out until a person
+writes in the thread again.
+
 Out to the group (the event): a new message of the chat as ``hub.bridge_message`` lets it out (None: nothing goes),
 once, as HTML within 4096 characters, cut with a link to the hub when long; a run's progress as one message that is
 edited; the agent's ✅ and ❌ on a message the bridge carried as the bot's reaction (a person's stays on the hub).
@@ -34,8 +44,9 @@ run of the bridge is at work or TYPING_FOR_SECONDS passed for each.
 
 The bridge keeps in its state (``hub.bridge_set_state``) the group's message of each of the last hub messages it
 carried (``ids``), the files of a message still to go (``files``), the progress message of each of the last runs
-(``runs``), the runs at work and until when (``typing``), the chat's agent once it spoke (``agent``) and the senders
-told how to link (``told``).
+(``runs``), the runs at work and until when (``typing``), the chat's agent once it spoke (``agent``), the senders
+told how to link (``told``), the thread of the hub each of the last group messages it carried is in (``threads``)
+and the turns of bots in the last threads (``chains``).
 """
 
 from __future__ import annotations
@@ -118,13 +129,15 @@ class Group:
         if moved is not None:
             return moved
         found = telegram.command(self.text)
+        if found is not None and self.sender.get("is_bot") is True and found[0] in ("start", "link", "unlink"):
+            return "ignored"  # another bot links nothing and takes no bridge off
         if found is not None and found[0] == "start":  # a private chat's link, as before: it does not link a group
             return await self.updates.text(self.message, self.chat_id)
         if found is not None and found[0] == "link":
             return await self.link(found[1])
         if found is not None and found[0] == "unlink":
             return await self.unlink()
-        if self.sender.get("is_bot") is True or not isinstance(self.message.get("message_id"), int):
+        if not isinstance(self.message.get("message_id"), int):
             return "ignored"
         async with hub.begin(self.request) as conn:
             bridge = await hub.bridge_find(conn, plugin(), server.KIND, self.chat_id)
@@ -188,12 +201,16 @@ class Group:
         return isinstance(found, dict) and found.get("status") in ADMIN_STATES
 
     async def bridged(self, bridge: hub.Bridge) -> str:
-        """A message of the bridged group: in as its sender's member, or a word once to a sender not linked."""
+        """A message of the bridged group: in as its sender's member, or a word once to a sender not linked; a bot's
+        only when a hub admin linked it, within the turns of bots of its thread."""
         sender_id = _int(self.sender.get("id"))
         if sender_id is None:
             return "ignored"
+        is_bot = self.sender.get("is_bot") is True
         async with hub.begin(self.request) as conn:
             member = await hub.find_member(conn, plugin(), server.KIND, {"user_id": sender_id})
+            if member is None and is_bot:
+                return "ignored"  # a bot nobody linked: never answered, so no two bots loop on the hint
             if member is None:
                 fresh = await hub.bridge_read(conn, plugin(), bridge.id)
                 state = dict(fresh.state) if fresh is not None else dict(bridge.state)
@@ -207,6 +224,12 @@ class Group:
                 self.chat_id, HOW_TO_LINK.format(name=name, bot=bot), reply_to=self.message.get("message_id")
             )
             return "not_linked"
+        replied = _int(server._object(self.message.get("reply_to_message")).get("message_id"))
+        turn = None
+        if is_bot:
+            turn = await self.bot_turn(bridge, replied)
+            if turn is None:
+                return "chain_ended"
         files = []
         found = model.file_of(self.message)
         if found is not None:
@@ -220,27 +243,62 @@ class Group:
         try:
             async with hub.begin(self.request) as conn:
                 body = await self.body(conn, member, bridge, bot)
-                replied = server._object(self.message.get("reply_to_message")).get("message_id")
+                if turn is not None and turn > 0:
+                    body = model.turn_marked(body, turn)
                 sent = await hub.bridge_send(
                     conn,
                     member,
                     bridge.id,
                     body,
                     external_id=self.message["message_id"],
-                    reply_to=_int(replied),
+                    reply_to=replied,
                     attachment_ids=files,
                 )
                 fresh = await hub.bridge_read(conn, plugin(), bridge.id)
                 state = dict(fresh.state) if fresh is not None else {}
-                await _keep(
-                    conn, bridge, model.remembered(state, "ids", {sent.id: self.message["message_id"]}, model.KEEP_IDS)
-                )
+                state = model.remembered(state, "ids", {sent.id: self.message["message_id"]}, model.KEEP_IDS)
+                root = sent.thread_root_id if sent.thread_root_id is not None else sent.id
+                state = model.threaded(state, self.message["message_id"], root)
+                if is_bot:
+                    state = model.bot_spoke(state, root)
+                else:
+                    username = self.sender.get("username")
+                    state = model.spoke(state, root, f"@{username}" if isinstance(username, str) else member.login)
+                await _keep(conn, bridge, state)
         except hub.Refused as exc:
+            if is_bot:  # a bot is not answered: its answer to the refusal would be refused again
+                log.info("telegram bot message refused", extra={"bridge": bridge.id, "status": exc.status_code})
+                return "refused"
             await self.updates.say(
                 self.chat_id, f"The hub did not take that: {exc.detail}", reply_to=self.message.get("message_id")
             )
             return "refused"
         return "bridged_in"
+
+    async def bot_turn(self, bridge: hub.Bridge, replied: int | None) -> int | None:
+        """The turn a linked bot's message takes in the thread it replies to (0 for one that starts a thread), or None
+        when that thread's bots had their turns: the first time, the group is told and the chain ends."""
+        async with hub.begin(self.request) as conn:
+            fresh = await hub.bridge_read(conn, plugin(), bridge.id)
+        state = dict(fresh.state) if fresh is not None else dict(bridge.state)
+        root = model.thread_of(state, replied)
+        if root is None:
+            return 0
+        turns, opener, ended = model.chain(state, root)
+        if ended:
+            return None
+        if turns < model.MAX_BOT_TURNS:
+            return turns + 1
+        said = await self.updates.say(self.chat_id, model.chain_ended(opener), reply_to=self.message.get("message_id"))
+        async with hub.begin(self.request) as conn:
+            fresh = await hub.bridge_read(conn, plugin(), bridge.id)
+            state = model.ended(dict(fresh.state) if fresh is not None else state, root)
+            state = model.threaded(state, self.message["message_id"], root)
+            if said is not None:  # a bot that answers the notice answers in the ended chain
+                state = model.threaded(state, said, root)
+            await _keep(conn, bridge, state)
+        log.info("telegram chain of bots ended", extra={"bridge": bridge.id, "thread": root})
+        return None
 
     async def body(self, conn, member: hub.Member, bridge: hub.Bridge, bot: str) -> str:
         """The text as the hub reads it: its mentions of the bot and of linked accounts made the hub's."""
@@ -476,6 +534,10 @@ async def _carry(
                 return
             state = model.remembered(fresh.state, "ids", {message_id: head}, model.KEEP_IDS)
             state = model.pending_files(state, message_id, [found.id for found in going])
+            root = read.thread_root_id if read.thread_root_id is not None else message_id
+            state = model.threaded(state, head, root)  # a bot's reply to it is in its thread
+            if read.author_kind == "person" and read.author:
+                state = model.spoke(state, root, read.author)
             if read.author_kind == "agent" and read.author:
                 state["agent"] = read.author
             await _keep(conn, bridge, state)

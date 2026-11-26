@@ -84,9 +84,18 @@ versions.
 | 2.8.0 | 1.7 | `e7f93a86111354c123d10f656a9038e1d59a046b` (pull request #784: decisions carry a label, and channel edits) |
 | 2.8.1 | 1.7 | the same |
 | 2.8.2 | 1.8 | `c87a4d7ca6527697b979c501b1996475b498df2b` (pull request #785: a bridged group's sender who linked no account comes in as a guest) |
+| 2.9.0 | 1.8 | `cba15d9fc5797a335c7dda6dffa800f3a1ac0443` (release 0.73.6, which has the hub admin's link of a member's channel from 0.73.4) |
 
 ### Releases
 
+- **2.9.0**: telegram 1.4.0 lets another bot of a bridged group in when a hub admin linked it to a member
+  (`evo-agents hub admin channel-link <login> telegram user_id:=<bot id> username=<bot username>`): it comes in as that
+  member, so its `@<hub bot>` starts the chat's agent and its reply to the agent's message continues the thread. A bot
+  linked to no member is never answered and stays out, and a bot's `/link`, `/unlink` or `/start` does nothing. One
+  thread takes at most 4 messages of bots after a person last wrote in it, each marked `[turn n/4]`; the fifth ends the
+  chain, the group told once with the person who opened it, until a person writes in the thread again. Telegram hands
+  a bot other bots' messages only once Bot-to-Bot Communication Mode is on in @BotFather. The lock moves to evo-agents
+  0.73.6 (API 1.8, unchanged). No migration.
 - **2.8.2**: the code of 2.8.1, every plugin asking API 1.8. None of them uses what 1.8 adds (`bridge_guest`), so
   they behave as 2.8.1 does on a hub that serves 1.8; a hub that serves 1.7 leaves them out. No migration.
 - **2.8.1**: the same code as 2.8.0, released again because the test of a restricted project's files still

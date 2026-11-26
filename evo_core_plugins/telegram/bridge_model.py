@@ -17,6 +17,11 @@ Telegram allows, and that list has neither, so they go as 👍 and 👎.
 In from the group (``inbound_text``), ``@<bot>`` becomes the mention of the chat's agent and ``@<username>`` of a
 Telegram account linked to the hub the mention of its member's login, as the hub reads mentions.
 
+Another bot of the group that a hub admin linked to a member speaks for that member, and the turns of bots in one
+thread are bounded (``thread_of``, ``chain``, ``spoke``, ``bot_spoke``): a thread takes at most MAX_BOT_TURNS
+messages of bots after a person last wrote in it, each marked with its turn (``turn_marked``); the next ends the
+chain (``ended``), the group told once (CHAIN_ENDED), and bots are not heard there again until a person writes.
+
 A group gets at most GROUP_MESSAGES messages in GROUP_SECONDS, besides one a second in one chat and 30 a second
 overall that the Bot FAQ asks for (``Pace``).
 """
@@ -40,6 +45,14 @@ KEEP_IDS = 200  # the hub's messages whose group message the bridge remembers (r
 KEEP_RUNS = 30  # the runs whose progress message it remembers
 TYPING_STATES = frozenset({"leased", "running", "interactive"})  # a run whose agent is at work: the bot shows typing
 KEEP_TOLD = 200  # the senders it told how to link
+MAX_BOT_TURNS = 4  # the messages of bots one thread takes after a person last wrote there
+KEEP_THREADS = 100  # the group's messages whose thread of the hub the bridge remembers
+KEEP_CHAINS = 30  # the threads whose turns of bots it remembers
+TURN_MARK = "[turn {turn}/{limit}] "
+CHAIN_ENDED = (
+    "This thread had its {limit} turns between bots, so the hub takes no more of theirs here. "
+    "{opener}A message of a person in the thread gives them {limit} more."
+)
 CUT_TAIL = '\n\n<a href="{url}">Read the rest on the hub</a>'
 FILES_ON_HUB = "(a file, on the hub)"
 OPEN_TAIL = '\n<a href="{url}">Open it on the hub</a>'
@@ -314,6 +327,64 @@ def told(state: Mapping, user_id: int) -> dict:
     """``state`` with ``user_id`` among the senders told how to link."""
     kept = [user for user in state.get("told") or [] if user != user_id]
     return {**state, "told": [*kept, user_id][-KEEP_TOLD:]}
+
+
+# The turns of bots in a thread
+
+
+def thread_of(state: Mapping, group_message_id: int | None) -> int | None:
+    """The thread of the hub (its root's id) the group's message ``group_message_id`` is in, when the bridge knows."""
+    if group_message_id is None:
+        return None
+    found = (state.get("threads") or {}).get(str(group_message_id))
+    return found if isinstance(found, int) and not isinstance(found, bool) else None
+
+
+def threaded(state: Mapping, group_message_id: int, root: int) -> dict:
+    """``state`` with the group's message ``group_message_id`` in thread ``root``."""
+    return remembered(state, "threads", {group_message_id: root}, KEEP_THREADS)
+
+
+def chain(state: Mapping, root: int | None) -> tuple[int, str | None, bool]:
+    """(the turns of bots, who opened it, whether it ended) of the chain of thread ``root``: (0, None, False) for one
+    the bridge does not know."""
+    found = (state.get("chains") or {}).get(str(root)) if root is not None else None
+    if not isinstance(found, list) or len(found) != 3:
+        return 0, None, False
+    turns, opener, ended = found
+    turns = turns if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 0 else 0
+    return turns, opener if isinstance(opener, str) else None, ended is True
+
+
+def _chained(state: Mapping, root: int, turns: int, opener: str | None, ended: bool) -> dict:
+    return remembered(state, "chains", {root: [turns, opener, ended]}, KEEP_CHAINS)
+
+
+def spoke(state: Mapping, root: int, opener: str) -> dict:
+    """``state`` after a person, ``opener``, wrote in thread ``root``: its bots have MAX_BOT_TURNS turns again."""
+    return _chained(state, root, 0, opener[:64], False)
+
+
+def bot_spoke(state: Mapping, root: int) -> dict:
+    """``state`` after a bot took a turn in thread ``root``."""
+    turns, opener, ended = chain(state, root)
+    return _chained(state, root, turns + 1, opener, ended)
+
+
+def ended(state: Mapping, root: int) -> dict:
+    """``state`` with the chain of thread ``root`` ended: no bot is heard there until a person writes."""
+    turns, opener, _ = chain(state, root)
+    return _chained(state, root, turns, opener, True)
+
+
+def turn_marked(text: str, turn: int) -> str:
+    """A bot's ``text`` with its turn in the thread before it."""
+    return TURN_MARK.format(turn=turn, limit=MAX_BOT_TURNS) + text
+
+
+def chain_ended(opener: str | None) -> str:
+    """What the group is told once when a thread's bots had their turns: who opened the chain, when the bridge knows."""
+    return CHAIN_ENDED.format(limit=MAX_BOT_TURNS, opener=f"{opener}: " if opener else "")
 
 
 # The pace of a group

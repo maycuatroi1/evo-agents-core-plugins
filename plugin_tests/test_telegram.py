@@ -257,7 +257,9 @@ def test_linking_again_replaces_the_link_and_a_chat_speaks_for_one_member(client
     linked(client, hub["owner_web"], OTHER_CHAT)  # the owner's other account: the first link goes
     assert sql(hub_db, select(CHANNELS.c.config["chat_id"].as_integer())) == [(OTHER_CHAT,)]
     linked(client, hub["other_web"], OTHER_CHAT)  # someone else links that chat: the owner's link to it goes
-    found = sql(hub_db, select(tables.users.c.login).join_from(CHANNELS, tables.users))
+    found = sql(
+        hub_db, select(tables.users.c.login).join_from(CHANNELS, tables.users, CHANNELS.c.user_id == tables.users.c.id)
+    )
     assert found == [(OTHER,)]
 
 

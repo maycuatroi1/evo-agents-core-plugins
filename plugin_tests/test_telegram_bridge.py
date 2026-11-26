@@ -582,3 +582,111 @@ def test_inbound_mentions_and_outbound_html_as_the_model_makes_them():
         '\n<a href="https://hub.test/c">Open it on the hub</a>'
     )
     assert live  # the module of evo-agents' test helpers this module reads its hub from
+
+
+# Another bot of the group
+
+PEER_BOT_ID = 8100
+PEER_BOT = {"id": PEER_BOT_ID, "is_bot": True, "first_name": "Peer", "username": "peer_bot"}
+STRAY_BOT = {"id": 8200, "is_bot": True, "first_name": "Stray", "username": "stray_bot"}
+
+
+def peer_linked(bridged) -> dict:
+    """A group chat of the owner, the other member and the project's agent bridged to GROUP in place of the fixture's, and
+    the peer bot linked by a hub admin to the other member, in place of the private chat they linked."""
+    client, headers = bridged.client, bridged.headers
+    path = f"/v1/admin/users/{OTHER}/channels/telegram"
+    body = {"config": {"user_id": PEER_BOT_ID, "username": "peer_bot"}, "unique_on": ["user_id"]}
+    linked = client.put(path, json=body, headers=headers["admin"])
+    assert linked.status_code == 200, linked.text
+    fake = bridged.fake
+    fake.admins.add((GROUP, OWNER_CHAT))
+    assert in_group(client, "/unlink")[0] == "unbridged"
+    chat = created(client, headers["owner"], title="Two bots", people=[OTHER], agents=[PROJECT])
+    assert in_group(client, f"/link {bridge_code(client, chat['id'], bridged.web)}")[0] == "bridged"
+    return chat
+
+
+def came_in(bridged, chat: dict) -> list[dict]:
+    return [m for m in page(bridged.client, bridged.headers["owner"], chat["id"])["messages"] if m["via"] == "telegram"]
+
+
+def test_a_bot_nobody_linked_stays_out_and_is_never_answered(bridged):
+    client, fake, chat, headers = bridged.client, bridged.fake, bridged.chat, bridged.headers
+    before = len(to_group(fake))
+    assert in_group(client, "hello hub", STRAY_BOT)[0] == "ignored"
+    assert in_group(client, f"@{BOT} do something", STRAY_BOT)[0] == "ignored"
+    fake.admins.add((GROUP, STRAY_BOT["id"]))
+    assert in_group(client, "/unlink", STRAY_BOT)[0] == "ignored"  # an admin bot takes no bridge off
+    assert len(to_group(fake)) == before  # not even the hint of how to link
+    assert bridges(bridged.db) == [(str(GROUP), None)]
+    assert not [body for body in hub_bodies(client, headers["owner"], chat["id"]) if "hub" in body or "do" in body]
+
+
+def test_a_linked_bot_comes_in_as_its_member_and_its_mention_reaches_the_agent(bridged):
+    client = bridged.client
+    chat = peer_linked(bridged)
+    outcome, _ = in_group(client, f"@{BOT} what does the plan say?", PEER_BOT)
+    assert outcome == "bridged_in"
+    (message,) = came_in(bridged, chat)
+    assert message["author"]["login"] == OTHER, message
+    assert message["body"] == f"@{PROJECT} what does the plan say?"  # a new thread: no turn yet
+
+
+def test_the_bots_of_a_thread_take_four_turns_then_the_chain_ends_until_a_person_writes(bridged):
+    client, fake = bridged.client, bridged.fake
+    chat = peer_linked(bridged)
+    outcome, root = in_group(client, f"@{BOT} ask the peer bot about the release")
+    assert outcome == "bridged_in"
+    for turn in range(1, 5):
+        assert in_group(client, f"answer {turn}", PEER_BOT, reply_to=root)[0] == "bridged_in"
+    said_before = len(to_group(fake))
+    outcome, fifth = in_group(client, "answer 5", PEER_BOT, reply_to=root)
+    assert outcome == "chain_ended"
+    notice = to_group(fake)[said_before:]
+    assert [payload["text"] for payload in notice] == [bridge_model.chain_ended("@owner_tg")]
+    assert notice[0]["reply_parameters"]["message_id"] == fifth
+    # The bot answering the notice, or the thread again, is not heard and not told again.
+    assert in_group(client, "answer 6", PEER_BOT, reply_to=notice[0]["message_id"])[0] == "chain_ended"
+    assert in_group(client, "answer 7", PEER_BOT, reply_to=root)[0] == "chain_ended"
+    assert len(to_group(fake)) == said_before + 1
+    bodies = [m["body"] for m in came_in(bridged, chat) if m["author"]["login"] == OTHER]
+    assert bodies == [f"[turn {n}/4] answer {n}" for n in range(1, 5)]
+    roots = {m["thread_root_id"] for m in came_in(bridged, chat) if m["author"]["login"] == OTHER}
+    assert len(roots) == 1 and None not in roots
+    # A person writes in the thread: the bots have four turns again.
+    assert in_group(client, "go on", reply_to=root)[0] == "bridged_in"
+    assert in_group(client, "answer again", PEER_BOT, reply_to=root)[0] == "bridged_in"
+    assert came_in(bridged, chat)[-1]["body"] == "[turn 1/4] answer again"
+
+
+def test_a_bots_reply_to_a_hub_message_that_went_out_is_a_turn_of_its_thread(bridged):
+    client, fake, headers = bridged.client, bridged.fake, bridged.headers
+    chat = peer_linked(bridged)
+    asked = sent(client, headers["owner"], chat["id"], "@peer_bot when is the release?")
+    deliver_events(client)
+    (out,) = [payload for payload in to_group(fake) if "when is the release" in payload.get("text", "")]
+    assert in_group(client, "on Friday", PEER_BOT, reply_to=out["message_id"])[0] == "bridged_in"
+    answer = came_in(bridged, chat)[-1]
+    assert answer["body"] == "[turn 1/4] on Friday"
+    assert answer["thread_root_id"] == asked["id"], answer
+
+
+def test_the_turns_of_a_thread_as_the_model_keeps_them():
+    state = bridge_model.threaded({}, 501, 10)
+    assert bridge_model.thread_of(state, 501) == 10 and bridge_model.thread_of(state, 502) is None
+    assert bridge_model.thread_of(state, None) is None
+    assert bridge_model.chain(state, 10) == (0, None, False)
+    state = bridge_model.spoke(state, 10, "@owner_tg")
+    for _ in range(bridge_model.MAX_BOT_TURNS):
+        state = bridge_model.bot_spoke(state, 10)
+    assert bridge_model.chain(state, 10) == (4, "@owner_tg", False)
+    state = bridge_model.ended(state, 10)
+    assert bridge_model.chain(state, 10) == (4, "@owner_tg", True)
+    assert bridge_model.chain(bridge_model.spoke(state, 10, OWNER), 10) == (0, OWNER, False)
+    assert bridge_model.turn_marked("hi", 2) == "[turn 2/4] hi"
+    assert bridge_model.chain_ended(None).startswith("This thread had its 4 turns between bots")
+    for n in range(bridge_model.KEEP_CHAINS + 5):
+        state = bridge_model.bot_spoke(state, 1000 + n)
+    assert len(state["chains"]) == bridge_model.KEEP_CHAINS
+    assert bridge_model.chain({"chains": {"10": "broken"}}, 10) == (0, None, False)
