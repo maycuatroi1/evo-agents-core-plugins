@@ -87,9 +87,14 @@ versions.
 | 2.9.0 | 1.8 | `cba15d9fc5797a335c7dda6dffa800f3a1ac0443` (release 0.73.6, which has the hub admin's link of a member's channel from 0.73.4) |
 | 2.9.1 | 1.8 | the same |
 | 2.9.2 | 1.8 | the same |
+| 2.9.3 | 1.8 | the same |
 
 ### Releases
 
+- **2.9.3**: telegram 1.4.3 shows no progress line in the group for a run a linked bot's message started. A bot that
+  takes the newest message as its input (Hermes) read the progress edit ("Run #n: done") that came after the agent's
+  answer and lost the answer; now the answer is the last message such a run sends the group. The typing indicator
+  stays.
 - **2.9.2**: telegram 1.4.2 makes the agent's answer to a linked bot reach it in any mode. An agent's message in a
   thread where a bot spoke last, since a person did, goes out as a reply to that bot's message instead of the
   thread's first group message: a bot without Bot-to-Bot Communication Mode still gets the replies to its own
