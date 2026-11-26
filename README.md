@@ -88,9 +88,15 @@ versions.
 | 2.9.1 | 1.8 | the same |
 | 2.9.2 | 1.8 | the same |
 | 2.9.3 | 1.8 | the same |
+| 2.10.0 | 1.8 | the same |
 
 ### Releases
 
+- **2.10.0**: telegram 1.5.0 lets a bridged group set the bound on the turns of bots in one thread. `/botturns <n>`
+  (1 to 1000) sets it, `/botturns off` takes it off so two linked bots go on until one stops (their messages marked
+  `[turn n]`), and `/botturns` alone says what it is. An admin of the group or a person linked to the hub sets it; a
+  bot never does. Setting it counts every chain of the group again from nought, so a thread that had its turns takes
+  its bots again. The default stays 4.
 - **2.9.3**: telegram 1.4.3 shows no progress line in the group for a run a linked bot's message started. A bot that
   takes the newest message as its input (Hermes) read the progress edit ("Run #n: done") that came after the agent's
   answer and lost the answer; now the answer is the last message such a run sends the group. The typing indicator
