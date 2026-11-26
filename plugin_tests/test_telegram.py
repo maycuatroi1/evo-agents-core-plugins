@@ -682,7 +682,7 @@ def test_a_hub_admin_points_the_webhook_at_the_hub_with_the_secret(client, hub, 
     assert registered == {
         "url": "https://hub.test/v1/telegram/webhook",
         "secret_token": SECRET,
-        "allowed_updates": ["message", "callback_query", "my_chat_member"],
+        "allowed_updates": ["message", "edited_message", "callback_query", "my_chat_member"],
     }
     assert [row[:2] for row in audit_rows(hub_db, "telegram")] == [
         ("telegram.webhook", "https://hub.test/v1/telegram/webhook")

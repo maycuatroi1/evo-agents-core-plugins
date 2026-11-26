@@ -226,6 +226,8 @@ class Group:
             return "not_linked"
         replied = _int(server._object(self.message.get("reply_to_message")).get("message_id"))
         turn = None
+        if is_bot and model.streaming(self.text):
+            return "held"  # a streamed answer: its last edit comes in (``edited``)
         if is_bot:
             turn = await self.bot_turn(bridge, replied)
             if turn is None:
@@ -336,6 +338,30 @@ class Group:
         except hub.Refused as exc:
             await self.updates.say(self.chat_id, f"The hub did not take that file: {exc.detail}", reply_to=reply_to)
             return None
+
+
+async def edited(updates: server.Updates, message: dict) -> str:
+    """An edit of a group's message (the update edited_message). Only a linked bot's comes in, and only the edit that
+    finished a streamed answer (no cursor at its end) of a message the bridge did not carry yet: a bot that streams
+    sends a cursor first and edits it into its answer. A person's edit, or a bot's later edit of a message that came in,
+    stays on Telegram. Edits still streaming do not count against the group's inbound updates."""
+    chat = server._object(message.get("chat"))
+    chat_id, message_id = _int(chat.get("id")), _int(message.get("message_id"))
+    if chat_id is None or message_id is None or chat.get("type") not in model.GROUP_TYPES:
+        return "ignored"
+    if server._object(message.get("from")).get("is_bot") is not True:
+        return "ignored"
+    group = Group(updates, message, chat_id)
+    if model.streaming(group.text):
+        return "held"
+    async with hub.begin(updates.request) as conn:
+        bridge = await hub.bridge_find(conn, plugin(), server.KIND, chat_id)
+    if bridge is None or model.thread_of(bridge.state, message_id) is not None:
+        return "ignored"  # no bridge, or the message came in already
+    if not server.inbound(updates.app).allow(chat_id, updates=model.GROUP_INBOUND_UPDATES):
+        log.info("telegram update dropped: too many from one chat")
+        return "dropped"
+    return await group.handle()
 
 
 async def move(conn, old: int, new: int) -> bool:

@@ -49,6 +49,8 @@ MAX_BOT_TURNS = 4  # the messages of bots one thread takes after a person last w
 KEEP_THREADS = 100  # the group's messages whose thread of the hub the bridge remembers
 KEEP_CHAINS = 30  # the threads whose turns of bots it remembers
 TURN_MARK = "[turn {turn}/{limit}] "
+# what a bot that streams its answer puts at the end of the message it is still editing (Hermes: " ▉")
+STREAMING_TAILS = ("▉", "▊", "▋", "▌", "▍", "▎", "▏", "█")
 CHAIN_ENDED = (
     "This thread had its {limit} turns between bots, so the hub takes no more of theirs here. "
     "{opener}A message of a person in the thread gives them {limit} more."
@@ -375,6 +377,12 @@ def ended(state: Mapping, root: int) -> dict:
     """``state`` with the chain of thread ``root`` ended: no bot is heard there until a person writes."""
     turns, opener, _ = chain(state, root)
     return _chained(state, root, turns, opener, True)
+
+
+def streaming(text: str) -> bool:
+    """Whether a bot's ``text`` is an answer it is still writing: it ends with a cursor of STREAMING_TAILS, which the
+    bot's last edit takes off. Such a message is held, not carried, until that edit."""
+    return text.rstrip().endswith(STREAMING_TAILS)
 
 
 def turn_marked(text: str, turn: int) -> str:

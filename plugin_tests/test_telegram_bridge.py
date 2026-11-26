@@ -690,3 +690,31 @@ def test_the_turns_of_a_thread_as_the_model_keeps_them():
         state = bridge_model.bot_spoke(state, 1000 + n)
     assert len(state["chains"]) == bridge_model.KEEP_CHAINS
     assert bridge_model.chain({"chains": {"10": "broken"}}, 10) == (0, None, False)
+
+
+def bot_edit(message_id: int, text: str, sender: dict = PEER_BOT, reply_to: int | None = None) -> dict:
+    """The update edited_message of the group's message ``message_id``, now ``text``."""
+    update = text_update(next(updates), group_chat(GROUP), sender, text, reply_to=reply_to)
+    edited = {**update["message"], "message_id": message_id, "edit_date": 1_760_000_100}
+    return {"update_id": update["update_id"], "edited_message": edited}
+
+
+def test_a_streamed_bot_answer_comes_in_once_from_the_edit_that_finished_it(bridged):
+    client = bridged.client
+    chat = peer_linked(bridged)
+    outcome, root = in_group(client, "a question for the peer bot")
+    assert outcome == "bridged_in"
+    outcome, streamed = in_group(client, "▉", PEER_BOT, reply_to=root)
+    assert outcome == "held"
+    assert handled(client, bot_edit(streamed, "The release is on ▉", reply_to=root)) == "held"
+    assert handled(client, bot_edit(streamed, "The release is on Friday.", reply_to=root)) == "bridged_in"
+    assert handled(client, bot_edit(streamed, "The release is on Friday!", reply_to=root)) == "ignored"
+    # A person's edit, and a bot's edit of a message that came in whole, stay on Telegram.
+    assert handled(client, bot_edit(root, "a question, edited", OWNER_TG)) == "ignored"
+    outcome, whole = in_group(client, "no stream here", PEER_BOT, reply_to=root)
+    assert outcome == "bridged_in"
+    assert handled(client, bot_edit(whole, "no stream here, edited", reply_to=root)) == "ignored"
+    bodies = [m["body"] for m in came_in(bridged, chat) if m["author"]["login"] == OTHER]
+    assert bodies == ["[turn 1/4] The release is on Friday.", "[turn 2/4] no stream here"]
+    assert bridge_model.streaming("thinking ▉ ") and not bridge_model.streaming("done.")
+    assert "edited_message" in server.ALLOWED_UPDATES

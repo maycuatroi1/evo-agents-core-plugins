@@ -85,9 +85,16 @@ versions.
 | 2.8.1 | 1.7 | the same |
 | 2.8.2 | 1.8 | `c87a4d7ca6527697b979c501b1996475b498df2b` (pull request #785: a bridged group's sender who linked no account comes in as a guest) |
 | 2.9.0 | 1.8 | `cba15d9fc5797a335c7dda6dffa800f3a1ac0443` (release 0.73.6, which has the hub admin's link of a member's channel from 0.73.4) |
+| 2.9.1 | 1.8 | the same |
 
 ### Releases
 
+- **2.9.1**: telegram 1.4.1 takes a linked bot's streamed answer once, whole. A bot that streams sends a cursor first
+  (`▉`) and edits it into its answer; the bridge holds a bot's message that ends with such a cursor and carries the
+  edit that took it off (the update `edited_message`, now among the webhook's `allowed_updates`), with its turn
+  counted then. A person's edit, or a bot's later edit of a message that came in, stays on Telegram, and edits still
+  streaming do not count against the group's inbound updates. A hub that sets its webhook itself sets it again with
+  the new `allowed_updates` (`evo-agents hub admin telegram --set-webhook`, or Telegram's `setWebhook`).
 - **2.9.0**: telegram 1.4.0 lets another bot of a bridged group in when a hub admin linked it to a member
   (`evo-agents hub admin channel-link <login> telegram user_id:=<bot id> username=<bot username>`): it comes in as that
   member, so its `@<hub bot>` starts the chat's agent and its reply to the agent's message continues the thread. A bot
